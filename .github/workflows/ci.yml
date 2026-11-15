@@ -1,0 +1,16 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: ShellCheck + 单元测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck gawk
+      - run: shellcheck bin/swiftban.sh lib/*.sh tests/test_detector.sh
+      - run: bash tests/test_detector.sh
