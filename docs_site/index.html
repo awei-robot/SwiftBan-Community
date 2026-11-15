@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SwiftBan — 零误封的自建站 WAF｜Nginx 攻击检测与自动封禁</title>
+<meta name="description" content="SwiftBan 是轻量级、零依赖、零误封的开源 WAF：分析 Nginx/NPM 日志，11 维度识别扫描、注入、爆破、CC 攻击，iptables 自动封禁，5 分钟部署。">
+<style>
+:root{
+  --bg:#0b0f14;--bg2:#111722;--card:#151c28;--line:#232c3d;
+  --fg:#e8ecf3;--muted:#93a0b4;--accent:#3b82f6;--accent2:#22d3ee;
+  --ok:#22c55e;--warn:#f59e0b;--danger:#ef4444;
+  --grad:linear-gradient(135deg,#3b82f6 0%,#22d3ee 100%);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--fg);font:16px/1.75 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent2);text-decoration:none}
+a:hover{text-decoration:underline}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+nav{position:sticky;top:0;z-index:50;backdrop-filter:blur(12px);background:rgba(11,15,20,.8);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;justify-content:space-between;height:64px}
+.logo{font-weight:700;font-size:20px;display:flex;align-items:center;gap:10px}
+.logo .shield{width:34px;height:34px;border-radius:9px;background:var(--grad);display:grid;place-items:center;font-size:18px}
+nav .links{display:flex;gap:28px;font-size:14px;color:var(--muted)}
+nav .links a{color:var(--muted)}
+nav .links a:hover{color:var(--fg);text-decoration:none}
+.btn{display:inline-block;padding:12px 22px;border-radius:10px;font-weight:600;font-size:15px;border:1px solid transparent;transition:.15s}
+.btn:hover{text-decoration:none;transform:translateY(-1px)}
+.btn-primary{background:var(--grad);color:#fff;box-shadow:0 6px 24px rgba(59,130,246,.35)}
+.btn-ghost{border-color:var(--line);color:var(--fg)}
+.btn-sm{padding:8px 16px;font-size:13px;border-radius:8px}
+header.hero{padding:96px 0 72px;background:
+  radial-gradient(600px 300px at 20% 0%,rgba(59,130,246,.18),transparent),
+  radial-gradient(600px 300px at 80% 10%,rgba(34,211,238,.12),transparent)}
+.hero .tag{display:inline-block;font-size:13px;color:var(--accent2);border:1px solid rgba(34,211,238,.35);border-radius:999px;padding:4px 14px;margin-bottom:20px;background:rgba(34,211,238,.08)}
+.hero h1{font-size:52px;line-height:1.15;font-weight:800;letter-spacing:-.02em}
+.hero h1 .grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero p.sub{margin:20px 0 8px;font-size:19px;color:var(--muted);max-width:720px}
+.hero .cta{margin-top:32px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.hero .code{margin-top:34px;background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:16px 20px;font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;color:#9ecbff;overflow-x:auto}
+.hero .code b{color:var(--muted);font-weight:400}
+section{padding:72px 0;border-top:1px solid var(--line)}
+h2{font-size:32px;font-weight:700;letter-spacing:-.01em;margin-bottom:12px}
+p.lead{color:var(--muted);font-size:17px;margin-bottom:40px;max-width:760px}
+.grid{display:grid;gap:18px}
+.grid-3{grid-template-columns:repeat(3,1fr)}
+.grid-2{grid-template-columns:repeat(2,1fr)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px}
+.card .ico{font-size:26px;margin-bottom:12px}
+.card h3{font-size:17px;margin-bottom:8px}
+.card p{font-size:14px;color:var(--muted)}
+table{width:100%;border-collapse:collapse;font-size:14.5px}
+th,td{padding:12px 14px;border-bottom:1px solid var(--line);text-align:left}
+th{color:var(--muted);font-weight:500;font-size:13px}
+td.c,th.c{text-align:center}
+.yes{color:var(--ok);font-weight:600}.no{color:var(--muted)}
+tr.hl td{background:rgba(59,130,246,.06)}
+.steps{counter-reset:s;display:grid;gap:16px}
+.step{display:flex;gap:16px;align-items:flex-start;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 24px}
+.step::before{counter-increment:s;content:counter(s);flex:0 0 34px;height:34px;border-radius:50%;background:var(--grad);color:#fff;font-weight:700;display:grid;place-items:center;font-size:15px}
+.step h3{font-size:16px;margin-bottom:4px}
+.step p{font-size:14px;color:var(--muted)}
+.step code{background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:13px;color:#9ecbff}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px;text-align:center}
+.stat b{display:block;font-size:34px;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.stat span{font-size:13px;color:var(--muted)}
+.banner{background:linear-gradient(135deg,rgba(59,130,246,.14),rgba(34,211,238,.1));border:1px solid rgba(59,130,246,.35);border-radius:16px;padding:40px;text-align:center}
+.banner h2{margin-bottom:8px}
+.banner p{color:var(--muted);margin-bottom:24px}
+footer{border-top:1px solid var(--line);padding:32px 0;color:var(--muted);font-size:13.5px}
+footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px}
+@media(max-width:860px){.grid-3,.grid-2,.stats{grid-template-columns:1fr 1fr}.hero h1{font-size:38px}nav .links{display:none}}
+@media(max-width:560px){.grid-3,.grid-2,.stats{grid-template-columns:1fr}.hero h1{font-size:32px}}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <div class="logo"><span class="shield">🛡️</span>SwiftBan</div>
+    <div class="links">
+      <a href="#features">特性</a>
+      <a href="#compare">版本对比</a>
+      <a href="#quickstart">快速开始</a>
+      <a href="https://github.com/awei-robot/SwiftBan-Community">GitHub</a>
+    </div>
+    <a class="btn btn-primary btn-sm" href="https://github.com/awei-robot/SwiftBan-Community">⭐ 获取社区版</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="tag">开源 · MIT · 生产环境长期验证</span>
+    <h1>给自建站装上<br><span class="grad">零误封</span>的自动防护</h1>
+    <p class="sub">SwiftBan 分析 Nginx / NPM 访问日志，11 个维度识别扫描、注入、爆破与 CC 攻击，自动用 iptables 封禁恶意 IP。纯 Bash 零依赖，5 分钟部署，Docker 场景开箱即用。</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/awei-robot/SwiftBan-Community#快速开始">立即部署</a>
+      <a class="btn btn-ghost" href="https://github.com/awei-robot/SwiftBan-Community">⭐ GitHub 仓库</a>
+    </div>
+    <div class="code"><b># 演练模式先跑 1-2 天，确认无误封再启用</b><br>git clone https://github.com/awei-robot/SwiftBan-Community.git && cd SwiftBan-Community<br>sudo ./install/install.sh<br>swiftban run --dry-run</div>
+  </div>
+</header>
+
+<section id="stats">
+  <div class="wrap">
+    <div class="stats">
+      <div class="stat"><b>11</b><span>检测维度</span></div>
+      <div class="stat"><b>0</b><span>运行时依赖（纯 Bash）</span></div>
+      <div class="stat"><b>0</b><span>误封记录（生产验证）</span></div>
+      <div class="stat"><b>5min</b><span>从安装到防护</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <h2>为什么是 SwiftBan</h2>
+    <p class="lead">fail2ban 配置复杂、云 WAF 成本高。SwiftBan 用 2000 行 Bash 做好了"读日志 → 识别攻击 → 封 IP"这一件事，并把"不误伤正常业务"作为第一原则。</p>
+    <div class="grid grid-3">
+      <div class="card"><div class="ico">🎯</div><h3>零误封设计</h3><p>只封明确攻击特征；高频请求仅记录观察（WATCH）；双层白名单支持 CIDR 网段；内网网关默认放行。</p></div>
+      <div class="card"><div class="ico">📦</div><h3>零依赖轻量</h3><p>纯 Bash + gawk，无需 Python/Go 运行时。10 万行日志单次扫描 < 5 秒，内存 < 10MB。</p></div>
+      <div class="card"><div class="ico">🐳</div><h3>Docker 原生适配</h3><p>自动写入 DOCKER-USER 链——Docker 端口映射流量走 FORWARD，普通 INPUT 规则根本拦不住。</p></div>
+      <div class="card"><div class="ico">🔍</div><h3>11 维度检测</h3><p>444 扫描、404/400 探测、恶意路径（wp-admin/.env/.git）、SQL 注入/XSS/Log4j 载荷、sqlmap 等 14 种扫描器 UA、登录爆破、单接口速率（CC）、空 UA。</p></div>
+      <div class="card"><div class="ico">⏱️</div><h3>自动解封与恢复</h3><p>TTL 到期自动解封（默认 3 天）；服务器重启或规则被清空后自动重建；状态文件持久化。</p></div>
+      <div class="card"><div class="ico">🌐</div><h3>时区安全</h3><p>全程 UTC 时间戳精确过滤。曾因 8 小时时区偏差导致窗口统计恒为 0 的坑，已彻底解决。</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="compare">
+  <div class="wrap">
+    <h2>社区版 vs 商业版</h2>
+    <p class="lead">社区版永久免费开源（MIT）。需要 Web 管理台、Windows 服务器防护或多机集中管理时，升级商业版。</p>
+    <div class="card" style="padding:0;overflow:hidden">
+      <table>
+        <thead><tr><th>能力</th><th class="c">社区版</th><th class="c">商业版</th></tr></thead>
+        <tbody>
+          <tr class="hl"><td>11 维度检测 + iptables 双栈封禁</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
+          <tr><td>CLI 管理 / cron 定时</td><td class="c yes">✓</td><td class="c yes">✓</td></tr>
+          <tr><td>Go 单二进制（Linux / Windows）</td><td class="c no">—</td><td class="c yes">✓</td></tr>
+          <tr><td>Web 管理台（仪表盘 / 封禁 / 白名单）</td><td class="c no">—</td><td class="c yes">✓</td></tr>
+          <tr><td>Windows 服务版（RDP 爆破防护）</td><td class="c no">—</td><td class="c yes">✓</td></tr>
+          <tr><td>多机集中控制台</td><td class="c no">—</td><td class="c yes">✓ Enterprise</td></tr>
+          <tr><td>license 授权 / 规则订阅</td><td class="c no">—</td><td class="c yes">✓</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:16px;font-size:14px;color:var(--muted)">商业版与更多资料见 <a href="https://github.com/awei-robot/SwiftBan">github.com/awei-robot/SwiftBan</a></p>
+  </div>
+</section>
+
+<section id="quickstart">
+  <div class="wrap">
+    <h2>5 分钟部署</h2>
+    <p class="lead">三步完成。支持 cron 每分钟执行，或 systemd timer 常驻。</p>
+    <div class="steps">
+      <div class="step"><div><h3>克隆并安装</h3><p>安装脚本自动检查依赖（iptables / gawk），复制程序到 <code>/usr/local/bin</code>。</p></div></div>
+      <div class="step"><div><h3>配置日志目录与白名单</h3><p>编辑 <code>/etc/swiftban/swiftban.conf</code>，指向 Nginx/NPM 日志目录，填入内网可信 IP。</p></div></div>
+      <div class="step"><div><h3>演练模式观察，再正式启用</h3><p><code>swiftban run --dry-run</code> 只检测不封禁；确认无误封后安装 cron 或 timer。</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="banner">
+      <h2>今天就把攻击挡在门外</h2>
+      <p>开源免费 · MIT 协议 · 欢迎提 Issue 与 PR</p>
+      <div style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap">
+        <a class="btn btn-primary" href="https://github.com/awei-robot/SwiftBan-Community">获取 SwiftBan 社区版</a>
+        <a class="btn btn-ghost" href="https://github.com/awei-robot/SwiftBan-Community/releases">下载 v1.0.1</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>© 2026 SwiftBan · MIT License</div>
+    <div><a href="https://github.com/awei-robot/SwiftBan-Community">社区版</a> · <a href="https://github.com/awei-robot/SwiftBan">商业版</a> · <a href="https://github.com/awei-robot/SwiftBan-Community/issues">问题反馈</a></div>
+  </div>
+</footer>
+
+</body>
+</html>
