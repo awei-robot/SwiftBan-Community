@@ -1,0 +1,15 @@
+[Unit]
+Description=SwiftBan - Nginx Attack Detection & Auto Ban (Go edition)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 每次触发：恢复丢失规则 → 检测 → 封禁/解封
+ExecStart=/usr/local/bin/swiftban run
+# 单实例锁在程序内（flock），重复触发自动跳过
+StandardOutput=append:/etc/swiftban/state/run.log
+StandardError=append:/etc/swiftban/state/run.log
+
+[Install]
+WantedBy=multi-user.target

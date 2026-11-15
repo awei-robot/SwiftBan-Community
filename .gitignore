@@ -1,0 +1,10 @@
+# SwiftBan 运行时状态与构建产物
+*.log
+*.bak
+/etc/swiftban/
+.DS_Store
+*.swp
+core/swiftban
+core/swiftban-*
+
+.codegraph/

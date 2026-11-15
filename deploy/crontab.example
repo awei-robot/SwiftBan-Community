@@ -1,0 +1,2 @@
+# SwiftBan cron 示例（每分钟执行）
+* * * * * /usr/local/bin/swiftban run >> /etc/swiftban/state/cron.log 2>&1
