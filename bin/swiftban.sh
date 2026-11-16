@@ -66,10 +66,21 @@ load_config() {
 
 #---------------- 加载模块 ----------------
 load_libs() {
-    local lib
+    local lib path
+    # 先核对全部模块，避免部分加载后继续调用不存在的函数。
+    for lib in logger firewall whitelist detector; do
+        path="${SWIFTBAN_LIB_DIR}/${lib}.sh"
+        if [[ ! -r "$path" ]]; then
+            echo "错误: 无法读取模块 ${path}，请从同一版本源码重新运行安装脚本" >&2
+            return 1
+        fi
+    done
     for lib in logger firewall whitelist detector; do
         # shellcheck disable=SC1090
-        source "${SWIFTBAN_LIB_DIR}/${lib}.sh"
+        if ! source "${SWIFTBAN_LIB_DIR}/${lib}.sh"; then
+            echo "错误: 加载模块 ${SWIFTBAN_LIB_DIR}/${lib}.sh 失败" >&2
+            return 1
+        fi
     done
 }
 
@@ -151,7 +162,7 @@ cmd_install_cron() {
 }
 
 cmd_configtest() {
-    load_libs
+    load_libs || return 1
     det_check_config || return 1
     echo "=== 配置检查 ==="
     echo "日志格式: ${LOG_FORMAT}"
@@ -211,12 +222,12 @@ main() {
     fi
 
     case "$cmd" in
-        run)            load_libs; cmd_run "$@" ;;
-        status)         load_config; load_libs; cmd_status ;;
-        list|ls)        load_config; load_libs; cmd_list ;;
-        ban)            load_config; load_libs; cmd_ban "$@" ;;
-        unban)          load_config; load_libs; cmd_unban "$@" ;;
-        whitelist|wl)   load_config; load_libs; cmd_whitelist "$@" ;;
+        run)            load_libs || return 1; cmd_run "$@" ;;
+        status)         load_config; load_libs || return 1; cmd_status ;;
+        list|ls)        load_config; load_libs || return 1; cmd_list ;;
+        ban)            load_config; load_libs || return 1; cmd_ban "$@" ;;
+        unban)          load_config; load_libs || return 1; cmd_unban "$@" ;;
+        whitelist|wl)   load_config; load_libs || return 1; cmd_whitelist "$@" ;;
         install-cron)   load_config; cmd_install_cron ;;
         configtest)     load_config; cmd_configtest ;;
         version|-v|--version) echo "SwiftBan v${SWIFTBAN_VERSION}" ;;

@@ -53,29 +53,36 @@ check_deps() {
 install_files() {
     info "安装到 ${SWIFTBAN_HOME} ..."
 
-    mkdir -p "${SWIFTBAN_HOME}"/{bin,lib,config,state} "${SWIFTBAN_LIB}"
+    mkdir -p "${SWIFTBAN_HOME}"/{bin,lib,config,state} "${SWIFTBAN_LIB}" || return 1
 
     # 主程序
-    install -m 755 "${SCRIPT_DIR}/bin/swiftban.sh" "${SWIFTBAN_BIN}"
+    install -m 755 "${SCRIPT_DIR}/bin/swiftban.sh" "${SWIFTBAN_BIN}" || return 1
     # 模块
     for lib in logger firewall whitelist detector; do
-        install -m 644 "${SCRIPT_DIR}/lib/${lib}.sh" "${SWIFTBAN_LIB}/${lib}.sh"
+        install -m 644 "${SCRIPT_DIR}/lib/${lib}.sh" "${SWIFTBAN_LIB}/${lib}.sh" || return 1
     done
     # 配置
     if [[ ! -f "${SWIFTBAN_HOME}/swiftban.conf" ]]; then
-        install -m 644 "${SCRIPT_DIR}/config/swiftban.conf" "${SWIFTBAN_HOME}/swiftban.conf"
+        install -m 644 "${SCRIPT_DIR}/config/swiftban.conf" "${SWIFTBAN_HOME}/swiftban.conf" || return 1
     else
         warn "配置已存在，保留: ${SWIFTBAN_HOME}/swiftban.conf"
     fi
     # 白名单模板
     if [[ ! -f "${SWIFTBAN_HOME}/state/whitelist.txt" ]]; then
-        cat > "${SWIFTBAN_HOME}/state/whitelist.txt" << 'EOF'
+        if ! cat > "${SWIFTBAN_HOME}/state/whitelist.txt" << 'EOF'
 # SwiftBan 白名单 - 每行 IP 或 CIDR（# 注释）
 EOF
+        then
+            error "创建白名单模板失败，安装未完成"
+            return 1
+        fi
     fi
 
     # 修正 lib 目录引用（安装后路径）
-    sed -i.bak "s|SWIFTBAN_LIB_DIR=.*|SWIFTBAN_LIB_DIR=\"${SWIFTBAN_LIB}\"|" "${SWIFTBAN_BIN}" 2>/dev/null || true
+    if ! sed -i.bak "s|SWIFTBAN_LIB_DIR=.*|SWIFTBAN_LIB_DIR=\"${SWIFTBAN_LIB}\"|" "${SWIFTBAN_BIN}"; then
+        error "写入模块加载目录失败，安装未完成"
+        return 1
+    fi
 
     info "文件安装完成"
 }
@@ -100,7 +107,10 @@ verify() {
         error "安装验证失败"
         exit 1
     fi
-    "${SWIFTBAN_BIN}" configtest || true
+    if ! "${SWIFTBAN_BIN}" configtest; then
+        error "安装验证失败：模块加载或配置检查未通过，不安装定时任务"
+        return 1
+    fi
 }
 
 #---------------- 主流程 ----------------
@@ -110,9 +120,9 @@ main() {
     echo "=============================="
     check_root
     check_deps
-    install_files
+    install_files || return 1
+    verify || return 1
     install_cron
-    verify
     echo
     info "安装完成！"
     echo

@@ -395,6 +395,69 @@ else
     fail "临时目录安装及配置兼容性"
 fi
 
+# 模拟已安装目录中缺少模块，CLI 不应继续调用缺失的检测函数。
+mv "$T/installed/lib/swiftban/logger.sh" "$T/installed/lib/swiftban/logger.sh.saved"
+if SWIFTBAN_CONF="$T/installed/etc/swiftban.conf" "$T/installed/swiftban" configtest > "$T/missing-module.output" 2>&1; then
+    fail "缺少模块时configtest必须失败"
+else
+    if grep -q '无法读取模块.*logger.sh' "$T/missing-module.output" && ! grep -q 'det_check_config:' "$T/missing-module.output"; then
+        ok "缺少模块时明确报错，不继续调用缺失函数"
+    else
+        fail "缺少模块时明确报错，不继续调用缺失函数"
+    fi
+fi
+if SWIFTBAN_CONF="$T/installed/etc/swiftban.conf" "$T/installed/swiftban" status > "$T/missing-module.output" 2>&1; then
+    fail "缺少模块时status必须失败"
+else
+    if grep -q '无法读取模块' "$T/missing-module.output" && ! grep -q 'fw_count:' "$T/missing-module.output"; then
+        ok "命令分发在模块加载失败后停止"
+    else
+        fail "命令分发在模块加载失败后停止"
+    fi
+fi
+if (
+    # shellcheck disable=SC1090,SC1091
+    source "$PROJECT_DIR/install/install.sh"
+    SWIFTBAN_BIN="$T/installed/swiftban"
+    export SWIFTBAN_CONF="$T/installed/etc/swiftban.conf"
+    verify
+) > "$T/verify.output" 2>&1; then
+    fail "模块缺失不得报告安装验证成功"
+else
+    if grep -q '安装验证失败' "$T/verify.output"; then ok "安装验证拒绝缺少模块的程序"; else fail "安装验证拒绝缺少模块的程序"; fi
+fi
+mv "$T/installed/lib/swiftban/logger.sh.saved" "$T/installed/lib/swiftban/logger.sh"
+# shellcheck disable=SC2329 # 校验失败时不应进入 cron；通过 mock 验证顺序。
+if (
+    # shellcheck disable=SC1090,SC1091
+    source "$PROJECT_DIR/install/install.sh"
+    check_root() { return 0; }
+    check_deps() { return 0; }
+    install_files() { return 0; }
+    verify() { echo verify >> "$T/install-order"; return 1; }
+    install_cron() { echo cron >> "$T/install-order"; }
+    main
+) > "$T/install-order.output" 2>&1; then
+    fail "安装验证失败必须停止安装流程"
+else
+    eq "$(cat "$T/install-order")" verify "安装验证失败不创建cron，也不报告完成"
+fi
+# shellcheck disable=SC2329 # 强制 sed 失败，检查路径改写错误能否向外传递。
+if (
+    # shellcheck disable=SC1090,SC1091
+    source "$PROJECT_DIR/install/install.sh"
+    SWIFTBAN_HOME="$T/relocate-failure/etc"
+    SWIFTBAN_LIB="$T/relocate-failure/lib"
+    SWIFTBAN_BIN="$T/relocate-failure/swiftban"
+    mkdir -p "$T/relocate-failure"
+    sed() { return 1; }
+    install_files
+) > "$T/relocate.output" 2>&1; then
+    fail "模块路径改写失败必须停止安装"
+else
+    if grep -q '写入模块加载目录失败' "$T/relocate.output"; then ok "模块路径改写失败必须停止安装"; else fail "模块路径改写失败必须停止安装"; fi
+fi
+
 # 必需/可选依赖检查不访问真实防火墙。
 # shellcheck disable=SC2329 # 被安装器和防火墙模块间接调用的 mock。
 if (
