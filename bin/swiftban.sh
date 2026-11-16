@@ -27,6 +27,7 @@ load_config() {
 
     # 默认值
     LOG_DIR="${LOG_DIR:-/root/proxy-manager/data/logs}"
+    LOG_FORMAT="${LOG_FORMAT:-auto}"
     STATE_DIR="${STATE_DIR:-/etc/swiftban/state}"
     BAN_TTL="${BAN_TTL:-259200}"
     WINDOW="${WINDOW:-7200}"
@@ -150,10 +151,18 @@ cmd_install_cron() {
 }
 
 cmd_configtest() {
+    load_libs
+    det_check_config || return 1
     echo "=== 配置检查 ==="
+    echo "日志格式: ${LOG_FORMAT}"
     echo "日志目录: ${LOG_DIR} $([[ -d "$LOG_DIR" ]] && echo '✓' || echo '✗ 不存在')"
     echo "状态目录: ${STATE_DIR} $([[ -d "$STATE_DIR" ]] && echo '✓' || echo '✗ 不存在')"
     echo "防火墙链: ${FIREWALL_CHAIN} $(iptables -L "$FIREWALL_CHAIN" -n >/dev/null 2>&1 && echo '✓' || echo '✗ 不可用')"
+    if command -v ip6tables >/dev/null 2>&1; then
+        echo "IPv6 工具: ip6tables 已安装"
+    else
+        echo "IPv6 工具: 未安装 ip6tables（可选，IPv4 功能不受影响）"
+    fi
     echo "白名单文件: ${WHITELIST_FILE} $([[ -f "$WHITELIST_FILE" ]] && echo '✓' || echo '✗ 不存在')"
     echo
     echo "阈值: 444=${LIMIT_444} 扫描=${LIMIT_SCAN} 恶意路径=${LIMIT_EVILPATH} 载荷=${LIMIT_PAYLOAD} UA=${LIMIT_UA} 爆破=${LIMIT_AUTH} 接口=${LIMIT_API} 速率=${LIMIT_API_RATE} 空UA=${LIMIT_EMPTYUA}"

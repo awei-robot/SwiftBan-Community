@@ -33,7 +33,8 @@ SwiftBan 通过分析 Nginx / Nginx Proxy Manager 访问日志，实时识别攻
 - 💾 **状态持久化**：服务器重启/规则丢失后自动恢复
 - 📦 **零依赖**：纯 Bash + GNU 工具（gawk），单机 5 分钟部署
 - 🔇 **防日志噪音**：白名单 IP 静默跳过
-- 🌐 **时区安全**：全程 UTC 时间戳，精确窗口统计
+- 🌐 **时区安全**：按日志时区偏移换算 UTC，拒绝未来时间，精确窗口统计
+- 🧾 **日志格式**：NPM standard/proxy 与 Nginx combined 自动识别，支持未压缩轮转文件
 
 ## 🚀 快速开始
 
@@ -45,7 +46,9 @@ cd SwiftBan-Community
 sudo ./install/install.sh
 ```
 
-依赖：Linux + root + iptables + gawk（awk 需支持 mktime）。安装脚本自带依赖检查。
+依赖：Linux + root + iptables + gawk（awk 需支持 mktime 及区间正则）。安装脚本自带依赖检查。
+
+`iptables` 必须存在；`ip6tables` 可选，缺失时提示 IPv6 封禁不可用，IPv4 功能正常。未成功执行的 IPv6 封禁不会写入封禁状态。
 
 ### 配置
 
@@ -53,6 +56,7 @@ sudo ./install/install.sh
 
 ```ini
 LOG_DIR=/root/proxy-manager/data/logs   # Nginx/NPM 日志目录
+LOG_FORMAT=auto                         # auto / npm_standard / npm_proxy / combined
 BAN_TTL=259200                          # 封禁时长（秒，0=永久）
 WHITELIST=127.0.0.1,::1,192.168.224.1   # 白名单
 ```
@@ -92,12 +96,12 @@ swiftban install-cron      # 安装每分钟执行 cron（或使用 systemd time
 ## 🏗️ 架构
 
 ```
-Nginx/NPM access.log
-      │ find -mmin -120 收集
+Nginx/NPM 活动日志及未压缩轮转文件
+      │ 第一层目录仅收集最近3分钟修改的文件，轮转重叠去重
       ▼
-TZ=UTC awk 时间过滤（精确到秒，窗口默认 2h）
+统一字段解析 → 按日志时区转 UTC → WINDOW 时间过滤
       ▼
-11 维度特征统计（awk/grep/sort/uniq）
+字段限定的特征统计（单次 awk 聚合）
       ▼
 白名单检查 → 阈值决策 → 封禁/观察
       ▼
@@ -108,12 +112,18 @@ banlist.txt 持久化 / TTL 自动解封 / 规则自动恢复
 
 详细设计见 [docs/architecture.md](docs/architecture.md)，配置项见 [docs/configuration.md](docs/configuration.md)。
 
+只支持上述已定义格式，未知或非法记录会跳过并报告数量；读取或解析程序失败时停止本轮新增封禁。仅读取最近3分钟修改的活动及未压缩轮转文件，入选文件仍按条目时间和 WINDOW 过滤；较早停止写入的文件不参与本轮统计。gzip、JSON、syslog 和任意自定义格式暂不支持。接口按 IP + 域名 + 完整 URI（保留查询参数）分组；combined 使用日志文件家族隔离站点。
+
+上线前请在目标版本的脱敏真实日志上执行 dry-run，检查格式错误及封禁候选。历史封禁及阈值不会自动调整。
+
 ## 🧪 测试
 
 ```bash
-bash tests/test_detector.sh     # 白名单 CIDR + UTC 时间过滤
-shellcheck bin/swiftban.sh lib/*.sh
+bash tests/test_detector.sh     # 白名单、格式/时区、字段边界、轮转、决策和故障回归
+shellcheck bin/swiftban.sh lib/*.sh tests/test_detector.sh install/install.sh
 ```
+
+macOS 测试会优先使用 gawk；awk 缺少 mktime 或区间正则支持时测试失败，不会跳过时间解析检查。测试中的防火墙操作均使用 mock。
 
 ## 📋 路线图
 

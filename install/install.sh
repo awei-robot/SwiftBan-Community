@@ -24,7 +24,7 @@ check_root() {
 }
 
 check_deps() {
-    local deps=(iptables ip6tables awk grep find xargs)
+    local deps=(iptables awk grep find stat sort)
     local missing=()
     for d in "${deps[@]}"; do
         command -v "$d" >/dev/null 2>&1 || missing+=("$d")
@@ -33,28 +33,33 @@ check_deps() {
         error "缺少依赖: ${missing[*]}"
         exit 1
     fi
+    if ! command -v ip6tables >/dev/null 2>&1; then
+        warn "未安装 ip6tables，IPv6 封禁不可用，IPv4 功能不受影响"
+    fi
 
-    # awk 需支持 mktime（时间过滤依赖）
-    if ! awk 'BEGIN{mktime("2026 11 12 00 00 00")}' 2>/dev/null; then
-        error "awk 不支持 mktime，请安装 gawk 或 mawk (>=1.3.4)"
+    # 与检测器一致：优先 gawk，并检查结构化解析使用的区间正则。
+    local awk_bin=awk
+    if command -v gawk >/dev/null 2>&1; then awk_bin=gawk; fi
+    if ! "$awk_bin" 'BEGIN{if(mktime("2026 11 12 00 00 00")<0 || "123" !~ /^[0-9]{3}$/) exit 1}' >/dev/null 2>&1; then
+        error "awk 需支持 mktime 和区间正则，请安装 gawk 或较新版本 mawk"
         error "  Debian/Ubuntu: apt install gawk"
         error "  CentOS/RHEL:   yum install gawk"
         exit 1
     fi
-    info "依赖检查通过（awk 支持 mktime）"
+    info "依赖检查通过（awk 支持 mktime 和区间正则）"
 }
 
 #---------------- 安装 ----------------
 install_files() {
     info "安装到 ${SWIFTBAN_HOME} ..."
 
-    mkdir -p "${SWIFTBAN_HOME}"/{bin,lib,config,state}
+    mkdir -p "${SWIFTBAN_HOME}"/{bin,lib,config,state} "${SWIFTBAN_LIB}"
 
     # 主程序
     install -m 755 "${SCRIPT_DIR}/bin/swiftban.sh" "${SWIFTBAN_BIN}"
     # 模块
     for lib in logger firewall whitelist detector; do
-        install -m 644 "${SCRIPT_DIR}/lib/${lib}.sh" "${SWIFTBAN_LIB}_${lib}.sh"
+        install -m 644 "${SCRIPT_DIR}/lib/${lib}.sh" "${SWIFTBAN_LIB}/${lib}.sh"
     done
     # 配置
     if [[ ! -f "${SWIFTBAN_HOME}/swiftban.conf" ]]; then
@@ -117,4 +122,6 @@ main() {
     echo "  文档:      ${SCRIPT_DIR}/docs/"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
