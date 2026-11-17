@@ -204,7 +204,10 @@ reset_logs
 for i in $(seq 1 30); do record "$(npm /same)"; done
 process
 decisions
-if grep -q '单接口速率 30次' "$T/decisions"; then ok "相同接口达到速率阈值触发"; else fail "相同接口达到速率阈值触发"; fi
+if grep -q 'WATCH 单IP单接口速率 198.51.100.1 | 30次/分钟' "$T/decisions" &&
+    ! grep -q '\[DRY-RUN\] 将封禁 198.51.100.1.*单接口速率' "$T/decisions"; then
+    ok "相同接口达到速率阈值只告警且不生成封禁候选"
+else fail "相同接口达到速率阈值只告警且不生成封禁候选"; fi
 reset_logs
 for host in a.example.com b.example.com; do
     for i in $(seq 1 29); do record "$(npm /same Mozilla/5.0 200 198.51.100.1 '' "$host")"; done
