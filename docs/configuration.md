@@ -43,7 +43,7 @@ WINDOW=7200    # 正整数秒；按日志中的时区偏移换算为 UTC
 | `LIMIT_UA` | 5 | 可疑 UA 次数 |
 | `LIMIT_AUTH` | 20 | 登录爆破（登录路径 401/403） |
 | `LIMIT_API` | 200 | IP + 域名 + 完整 URI 的窗口内总量 |
-| `LIMIT_API_RATE` | 30 | 同一分组每个 UTC 分钟的请求数 |
+| `LIMIT_API_RATE` | 30 | 同一 IP、域名和完整 URI 每个 UTC 分钟的请求数；超限只记录 WATCH 告警，不单独封禁，避免共享 NAT 出口误伤 |
 | `LIMIT_EMPTYUA` | 20 | 空 UA 次数 |
 | `LIMIT_HIGHFREQ` | 500 | 高频观察（仅记录，不封禁） |
 

@@ -91,7 +91,7 @@ NPM standard、NPM proxy、combined 统一输出 TSV：`epoch、IP、最终状�
 | 5 | 可疑 UA | UA 正则 | 5/2h |
 | 6 | 登录爆破 | 登录路径 401/403 | 20/2h |
 | 7 | 单接口高频 | IP + 域名 + 完整 URI | 200/2h |
-| 8 | 单接口速率 | 上述分组 + UTC 分钟 | 30/min |
+| 8 | 单接口速率 | 上述分组 + UTC 分钟 | 30/min，仅 WATCH 告警，不单独封禁（降低共享 NAT 误伤） |
 | 9 | 空 UA | UA 字段为 `-` 或空字符串 | 20/2h |
 | 10 | 高频观察 | IP 总请求 | 500/2h（仅记录）|
 | 11 | 双栈 | iptables + ip6tables | - |

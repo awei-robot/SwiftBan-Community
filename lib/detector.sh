@@ -440,7 +440,7 @@ det_detect_all() {
 
 # 封禁决策
 det_decide() {
-    local wd="$1" mode="${2:-normal}" candidates="${3:-}"
+    local wd="$1" mode="${2:-normal}" candidates="${3:-}" count rest ip endpoint
 
     _apply() {
         local file="$1" threshold="$2" fmt="$3" reason="$4"
@@ -477,8 +477,19 @@ det_decide() {
     _apply "${wd}/ip_ua.txt"      "$LIMIT_UA"     ip     "可疑UA" || return 1
     _apply "${wd}/ip_auth.txt"    "$LIMIT_AUTH"   ip     "登录爆破" || return 1
     _apply "${wd}/ip_api.txt"     "$LIMIT_API"    ipuri  "单接口高频" || return 1
-    _apply "${wd}/ip_apirate.txt" "$LIMIT_API_RATE" iprate "单接口速率" || return 1
     _apply "${wd}/ip_emptyua.txt" "$LIMIT_EMPTYUA" ip    "空UA" || return 1
+
+    # 单IP单接口速率只告警，不单独封禁；共用NAT出口的请求可能来自多个用户。
+    while read -r count rest; do
+        [[ -n "$rest" ]] || continue
+        if (( count >= LIMIT_API_RATE )); then
+            ip="${rest#*|}"; ip="${ip%%|*}"
+            endpoint="${rest#*|*|}"
+            if ! wl_is_whitelisted "$ip" && ! fw_is_banned "$ip"; then
+                log_warn "WATCH 单IP单接口速率 $ip | ${count}次/分钟 | $endpoint" || true
+            fi
+        fi
+    done < "${wd}/ip_apirate.txt"
 
     # 高频观察（仅记录）
     while read -r count ip; do
