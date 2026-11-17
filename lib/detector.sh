@@ -12,6 +12,7 @@ _banlog_file() { echo "${STATE_DIR}/ban.log"; }
 # 封禁（规则写入成功才记录状态，避免 banlist 与防火墙不一致）
 det_ban() {
     local ip="$1" reason="$2" tmp state
+    ip=$(wl_normalize_ip "$ip") || { log_error "无效的封禁 IP: $1"; return 1; }
     if declare -F rt_may_enforce >/dev/null && ! rt_may_enforce; then
         log_error "正式检测已停止，拒绝新增封禁"
         return 1
@@ -67,25 +68,35 @@ det_restore() {
 
 # 过期解封
 det_unban_expired() {
-    local tmp ip ts ttl reason failed=0
+    local tmp snapshot state ip ts ttl reason failed=0 keep
+    state=$(_state_file)
     tmp=$(mktemp "$STATE_DIR/.expired-${RT_RUN_ID:-standalone}.XXXXXX") || return 1
-    while IFS='|' read -r ip ts ttl reason; do
+    snapshot=$(mktemp "$STATE_DIR/.expired-${RT_RUN_ID:-standalone}.XXXXXX") || { rm -f "$tmp"; return 1; }
+    if ! cat "$state" > "$snapshot"; then
+        rm -f "$tmp" "$snapshot"
+        log_error "读取封禁状态失败，保留原文件"
+        return 1
+    fi
+    # shellcheck disable=SC2094 # 失败时删除快照，绝不改写正在读取的快照。
+    while IFS='|' read -r ip ts ttl reason || [[ -n "$ip" ]]; do
         [[ -z "$ip" ]] && continue
+        keep=1
         if [[ "$ttl" != "0" ]] && (( NOW - ts >= ttl )); then
             if [[ "$ip" == *:* ]] && ! command -v ip6tables >/dev/null 2>&1; then
-                log_warn "IPv6 过期规则无法确认撤销，保留过期记录等待核验: $ip"
-                printf '%s|%s|%s|%s\n' "$ip" "$ts" "$ttl" "$reason" >> "$tmp"
+                log_warn "IPv6 过期规则无法确认撤销，保留过期记录等待核验: $ip" || true
             elif fw_unban "$ip"; then
+                keep=0
                 log_action "UNBAN(expired) $ip | $reason"
-            else
-                printf '%s|%s|%s|%s\n' "$ip" "$ts" "$ttl" "$reason" >> "$tmp"
-                failed=1
-            fi
-        else
-            echo "${ip}|${ts}|${ttl}|${reason}" >> "$tmp"
+            else failed=1; fi
         fi
-    done < "$(_state_file)"
-    mv "$tmp" "$(_state_file)" || return 1
+        if (( keep )) && ! printf '%s|%s|%s|%s\n' "$ip" "$ts" "$ttl" "$reason" >> "$tmp"; then
+            rm -f "$tmp" "$snapshot"
+            log_error "写入封禁状态失败，保留原文件"
+            return 1
+        fi
+    done < "$snapshot"
+    rm -f "$snapshot"
+    if ! mv "$tmp" "$state"; then rm -f "$tmp"; return 1; fi
     (( failed == 0 ))
 }
 
@@ -100,14 +111,29 @@ det_awk() {
 }
 
 det_check_config() {
+    local name value
     case "$LOG_FORMAT" in
         auto|npm_standard|npm_proxy|combined) ;;
         *) log_error "不支持的 LOG_FORMAT: $LOG_FORMAT"; return 1 ;;
     esac
-    if [[ ! "$WINDOW" =~ ^[1-9][0-9]*$ ]]; then
-        log_error "WINDOW 必须为正整数秒"
-        return 1
-    fi
+    for name in WINDOW BAN_TTL LIMIT_444 LIMIT_SCAN LIMIT_EVILPATH LIMIT_PAYLOAD LIMIT_UA LIMIT_AUTH LIMIT_API LIMIT_API_RATE LIMIT_EMPTYUA LIMIT_HIGHFREQ; do
+        value="${!name}"
+        if [[ "$name" == BAN_TTL && "$value" == 0 ]]; then continue; fi
+        if [[ ! "$value" =~ ^[1-9][0-9]*$ ]] || (( ${#value} > 10 )); then
+            log_error "$name 必须为 1–2147483647 的整数（BAN_TTL 允许 0 表示永久）"
+            return 1
+        fi
+        if (( value > 2147483647 )); then log_error "$name 超出支持范围"; return 1; fi
+    done
+    for name in SAFE_PATH GIT_SAFE EVIL_PATH EVIL_PAYLOAD EVIL_UA LOGIN_PATH; do
+        value="${!name}"
+        if [[ -z "$value" ]] || ! SWIFTBAN_REGEX="$value" det_awk '
+            BEGIN {matched=("" ~ ENVIRON["SWIFTBAN_REGEX"]);exit 0}
+        ' >/dev/null 2>&1; then
+            log_error "$name 必须为非空且有效的正则表达式"
+            return 1
+        fi
+    done
 }
 
 # 输入协议：来源文件<TAB>日志家族<TAB>原始行；只读最近3分钟修改的文件，同一 inode 只读一次。
@@ -151,35 +177,8 @@ det_collect() {
 det_parse() {
     local src="$1" dst="$2" stats="$3"
     LC_ALL=C TZ=UTC SWIFTBAN_STATS="$stats" det_awk \
-        -v now="$NOW_EPOCH" -v win="$WINDOW" -v fmt="$LOG_FORMAT" '
-    function ipv4(s, a,n,i) {
-        n=split(s,a,".")
-        if(n!=4) return 0
-        for(i=1;i<=4;i++)
-            if(a[i]!~/^[0-9]{1,3}$/ || a[i]+0>255 || (length(a[i])>1 && a[i]~/^0/)) return 0
-        return 1
-    }
-    function hexgroups(s, a,n,i) {
-        if(s=="") return 0
-        n=split(s,a,":")
-        for(i=1;i<=n;i++) if(a[i]!~/^[0-9a-fA-F]{1,4}$/) return -100
-        return n
-    }
-    function validip(s, p,left,right,tail,i) {
-        if(index(s,":")==0) return ipv4(s)
-        if(s!~/^[0-9a-fA-F:.]+$/) return 0
-        if(index(s,".")) {
-            for(i=length(s);i>0 && substr(s,i,1)!=":";i--) {}
-            tail=substr(s,i+1)
-            if(!ipv4(tail)) return 0
-            s=substr(s,1,i) "0:0"
-        }
-        p=index(s,"::")
-        if(!p) return hexgroups(s)==8
-        if(index(substr(s,p+2),"::")) return 0
-        left=hexgroups(substr(s,1,p-1)); right=hexgroups(substr(s,p+2))
-        return left>=0 && right>=0 && left+right<8
-    }
+        -v now="$NOW_EPOCH" -v win="$WINDOW" -v fmt="$LOG_FORMAT" "$(ip_awk)"'
+    function validip(s) {return ip_canon(s)!=""}
     # 引号内的 [Client ...] 只是字符串，不是结构化字段。
     function tokens(s, i,c,start,q,v,n) {
         for(i in t) delete t[i]
@@ -275,10 +274,10 @@ det_parse() {
             }
         }
         if(fmt!="auto" && fmt!=detected) return 0
-        if(!validip(ip) || uri=="" || uri~/[[:space:]]/) return 0
+        ip=ip_canon(ip)
+        if(ip=="" || uri=="" || uri~/[[:space:]]/) return 0
         epoch=timestamp(stamp)
         if(epoch<0) return 0
-        ip=tolower(ip)
         return 1
     }
     BEGIN {
@@ -363,7 +362,22 @@ det_run() (
         det_decide "$workdir" dry "$candidates" || return 1
         dry_tmp=$(mktemp "$STATE_DIR/.dry-run-${RT_RUN_ID:-standalone}.XXXXXX") || return 1
         {
-            printf '# mode\tdry-run\n# started_epoch\t%s\n# finished_epoch\t%s\n' "$NOW_EPOCH" "$(date -u +%s)"
+            printf '# mode\tdry-run\n# run_id\t%s\n' "${RT_RUN_ID:-standalone}"
+            printf '# started_utc\t%s\n# finished_utc\t%s\n' \
+                "$(date -u -d "@$NOW_EPOCH" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -r "$NOW_EPOCH" '+%Y-%m-%dT%H:%M:%SZ')" \
+                "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            printf '# log_format\t%s\n# log_directory\t%s\n# file_mtime_filter\tlast_3_minutes\n# entry_window_seconds\t%s\n' \
+                "$LOG_FORMAT" "$LOG_DIR" "$WINDOW"
+            printf '# thresholds\t444=%s,scan=%s,evilpath=%s,payload=%s,ua=%s,auth=%s,api=%s,api_rate=%s,emptyua=%s\n' \
+                "$LIMIT_444" "$LIMIT_SCAN" "$LIMIT_EVILPATH" "$LIMIT_PAYLOAD" "$LIMIT_UA" "$LIMIT_AUTH" "$LIMIT_API" "$LIMIT_API_RATE" "$LIMIT_EMPTYUA"
+            printf '# source_files\n'
+            while IFS= read -r source || [[ -n "$source" ]]; do
+                [[ -n "$source" ]] && printf '# file\t%s\n' "$source"
+            done < "$workdir/files"
+            printf '# parse_stats: path\tvalid\tinvalid\texpired\tfuture\tduplicate\n'
+            while IFS=$'\t' read -r source valid invalid expired future duplicate; do
+                printf '# parse\t%s\t%s\t%s\t%s\t%s\t%s\n' "$source" "$valid" "$invalid" "$expired" "$future" "$duplicate"
+            done < "$workdir/stats.tsv"
             printf 'IP\t规则\t次数\t阈值\t分组\n'
             cat "$candidates"
         } > "$dry_tmp" && mv "$dry_tmp" "$STATE_DIR/dry-run.tsv" || return 1
@@ -446,6 +460,10 @@ det_decide() {
                         printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "$reason" "$count" "$threshold" "$rest" >> "$candidates" || return 1
                     fi
                 else
+                    if [[ "$ip" == *:* ]] && ! command -v ip6tables >/dev/null 2>&1; then
+                        log_warn "缺少 ip6tables，跳过 IPv6 自动封禁并继续处理 IPv4: $ip" || true
+                        continue
+                    fi
                     det_ban "$ip" "${reason} ${count}次" || return 1
                 fi
             fi

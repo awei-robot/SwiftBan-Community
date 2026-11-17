@@ -369,6 +369,7 @@ if (det_detect_all() { return 1; }; det_run 0 > "$T/run.output"); then fail "统
 eq "$(rows "$T/fw.calls")" 0 "统计程序失败不新增封禁"
 
 # 仅在临时目录执行安装文件步骤，不请求 root，不安装 cron。
+# shellcheck disable=SC2329 # 子进程配置检查使用导出的防火墙替身。
 if (
     # shellcheck disable=SC1090,SC1091
     source "$PROJECT_DIR/install/install.sh"
@@ -377,12 +378,17 @@ if (
     SWIFTBAN_BIN="$T/installed/swiftban"
     mkdir -p "$T/installed" || exit 1
     install_files || exit 1
+    mkdir -p "$T/live" "$T/state"
+    printf '\nLOG_DIR="%s"\nSTATE_DIR="%s"\nWHITELIST_FILE="%s"\n' "$T/live" "$T/state" "$T/whitelist" >> "$SWIFTBAN_HOME/swiftban.conf"
+    iptables() { return 0; }
+    ip6tables() { return 0; }
+    export -f iptables ip6tables
     for module in logger firewall whitelist runtime detector; do
         test -r "$SWIFTBAN_LIB/$module.sh" || exit 1
     done
     SWIFTBAN_CONF="$SWIFTBAN_HOME/swiftban.conf" "$SWIFTBAN_BIN" configtest > "$T/installed/output" || exit 1
     grep -q '日志格式: auto' "$T/installed/output" || exit 1
-    printf 'LOG_DIR="%s"\nSTATE_DIR="%s"\n' "$T/live" "$T/state" > "$T/installed/legacy.conf"
+    printf 'LOG_DIR="%s"\nSTATE_DIR="%s"\nWHITELIST_FILE="%s"\n' "$T/live" "$T/state" "$T/whitelist" > "$T/installed/legacy.conf"
     SWIFTBAN_CONF="$T/installed/legacy.conf" "$SWIFTBAN_BIN" configtest > "$T/installed/output" || exit 1
     grep -q '日志格式: auto' "$T/installed/output" || exit 1
     printf 'LOG_FORMAT=bad\n' >> "$T/installed/legacy.conf"
@@ -419,8 +425,7 @@ if (
     # shellcheck disable=SC1090,SC1091
     source "$PROJECT_DIR/install/install.sh"
     SWIFTBAN_BIN="$T/installed/swiftban"
-    export SWIFTBAN_CONF="$T/installed/etc/swiftban.conf"
-    verify
+    SWIFTBAN_CONF="$T/installed/etc/swiftban.conf" verify
 ) > "$T/verify.output" 2>&1; then
     fail "模块缺失不得报告安装验证成功"
 else
@@ -551,6 +556,118 @@ if (
 else
     cat "$T/firewall.output"
     fail "IPv6防火墙回归"
+fi
+
+echo ""
+echo "=== 高优先级故障回归 ==="
+(
+    WHITELIST=""
+    WHITELIST_FILE="$T/invalid-cidr"
+    : > "$WHITELIST_FILE"
+    for cidr in 10.0.0.0/33 10.0.0.0/-1 10.0.0.0/abc 10.0.0.0/08 10.0.0.0/24/1 999.0.0.0/8 010.0.0.0/8 '10.0.0.0/x+1' 2001:db8::/32; do
+        printf '%s\n' "$cidr" > "$WHITELIST_FILE"
+        if wl_is_whitelisted 198.51.100.8; then exit 1; fi
+        : > "$WHITELIST_FILE"
+        if wl_add "$cidr"; then exit 1; fi
+        [[ ! -s "$WHITELIST_FILE" ]] || exit 1
+    done
+) > "$T/cidr.output" 2>&1
+eq "$?" 0 "非法CIDR既不能添加，也不能使公网IP进入白名单"
+if wl_ip_in_cidr 198.51.100.8 0.0.0.0/0 &&
+    wl_ip_in_cidr 198.51.100.8 198.51.100.8/32 &&
+    ! wl_ip_in_cidr 198.51.100.9 198.51.100.8/32 &&
+    ! wl_ip_in_cidr 2001:db8::1 10.0.0.0/8; then
+    ok "CIDR的/0、/32边界正确，IPv6不进入IPv4算术"
+else fail "合法CIDR边界"; fi
+
+# 独立 Bash 保留安装器真实的 errexit/pipefail，绝不调用系统 crontab。
+cat > "$T/cron-test.sh" <<'EOF'
+#!/bin/bash
+source "$PROJECT_DIR/install/install.sh"
+SWIFTBAN_HOME="$CASE_DIR"
+export SWIFTBAN_CONF="$CASE_DIR/swiftban.conf"
+mkdir -p "$CASE_DIR/state"
+printf 'STATE_DIR="%s/state"\n' "$CASE_DIR" > "$SWIFTBAN_CONF"
+crontab() {
+    if [[ "$1" == -l ]]; then
+        case "$CRON_CASE" in
+            none) printf 'no crontab for root\n' >&2; return 1 ;;
+            read-error) printf 'permission denied\n' >&2; return 1 ;;
+            *) cat "$CASE_DIR/current" ;;
+        esac
+    else
+        if [[ "$CRON_CASE" == write-error ]]; then return 2; fi
+        cat "$1" > "$CASE_DIR/installed"
+    fi
+}
+install_cron <<< Y
+EOF
+for cron_case in none empty only mixed read-error write-error; do
+    case_dir="$T/cron-$cron_case"
+    mkdir "$case_dir"
+    : > "$case_dir/current"
+    case "$cron_case" in
+        only) printf '* * * * * /usr/local/bin/swiftban run\n' > "$case_dir/current" ;;
+        mixed)
+            printf '# swiftban run comment\n0 * * * * /usr/local/bin/backup\n* * * * * /usr/local/bin/swiftban run\n' > "$case_dir/current" ;;
+    esac
+    if PROJECT_DIR="$PROJECT_DIR" CRON_CASE="$cron_case" CASE_DIR="$case_dir" bash "$T/cron-test.sh" > "$case_dir/output" 2>&1; then
+        if [[ "$cron_case" == *-error ]]; then
+            fail "cron错误必须返回失败: $cron_case"
+        elif [[ "$(grep -c '^\* \* \* \* \* SWIFTBAN_CONF=' "$case_dir/installed")" != 1 ]]; then
+            fail "cron必须完整安装且不重复: $cron_case"
+        elif [[ "$cron_case" == mixed ]] &&
+            ! diff -u <(head -n 2 "$case_dir/current") <(head -n 2 "$case_dir/installed"); then
+            fail "cron保留其他任务和注释"
+        else ok "cron安全安装: $cron_case"; fi
+    else
+        if [[ "$cron_case" == *-error && ! -e "$case_dir/installed" ]] &&
+            ! grep -q 'cron 已安装' "$case_dir/output"; then
+            ok "cron失败不写任务、不报告成功: $cron_case"
+        else cat "$case_dir/output"; fail "cron安全安装: $cron_case"; fi
+    fi
+done
+
+# shellcheck disable=SC2329 # 从决策链间接调用的防火墙替身。
+if (
+    # shellcheck disable=SC1090,SC1091
+    source "$PROJECT_DIR/config/swiftban.conf"
+    # shellcheck disable=SC1090,SC1091
+    source "$LIBS/firewall.sh"
+    STATE_DIR="$T/mixed-family-state"
+    mkdir "$STATE_DIR"
+    BANLOG="$STATE_DIR/ban.log"
+    wd="$T/mixed-family-work"
+    mkdir "$wd"
+    for category in 444 scan evilpath payload ua auth api apirate emptyua freq; do
+        : > "$wd/ip_$category.txt"
+    done
+    printf '10 2001:db8::1\n10 198.51.100.10\n' > "$wd/ip_444.txt"
+    printf '100 198.51.100.11\n' > "$wd/ip_scan.txt"
+    wl_is_whitelisted() { return 1; }
+    fw_is_banned() { return 1; }
+    iptables() { [[ "$1" == -I ]]; }
+    ip6tables() { printf 'unexpected\n' >> "$STATE_DIR/ipv6.calls"; return 2; }
+    command() {
+        if [[ "$1" == -v && "$2" == ip6tables ]]; then return 1; fi
+        builtin command "$@"
+    }
+    NOW=100
+    det_decide "$wd" || exit 1
+    [[ "$(rows "$STATE_DIR/banlist.txt")" == 2 ]] || exit 1
+    grep -q '^198.51.100.10|' "$STATE_DIR/banlist.txt" || exit 1
+    grep -q '^198.51.100.11|' "$STATE_DIR/banlist.txt" || exit 1
+    [[ ! -e "$STATE_DIR/ipv6.calls" ]] || exit 1
+    # 工具存在但执行失败时，仍中断，而非静默吞掉真实故障。
+    command() { builtin command "$@"; }
+    if det_decide "$wd"; then exit 1; fi
+    [[ -s "$STATE_DIR/ipv6.calls" ]] || exit 1
+    [[ "$(rows "$STATE_DIR/banlist.txt")" == 2 ]] || exit 1
+) > "$T/mixed-family.output" 2>&1; then
+    ok "缺少ip6tables不阻断同规则及后续规则IPv4封禁，真实IPv6错误仍返回失败"
+else
+    cat "$T/mixed-family.output"
+    fail "IPv4/IPv6混合决策降级"
 fi
 
 echo ""

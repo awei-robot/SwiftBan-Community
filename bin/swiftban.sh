@@ -132,37 +132,25 @@ cmd_list() {
 }
 
 cmd_ban() {
-    local ip="${1:-}" part
-    local -a octets
-    [[ -z "$ip" ]] && { echo "用法: swiftban ban <IP>"; exit 1; }
-    if [[ ! "$ip" =~ ^[0-9a-fA-F:.]+$ ]]; then
-        echo "错误: ban 只接受单个 IP，不支持主机名或 CIDR" >&2
-        return 1
-    fi
-    if [[ "$ip" != *:* ]]; then
-        [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { echo "错误: 无效的 IPv4 地址" >&2; return 1; }
-        IFS=. read -r -a octets <<< "$ip"
-        for part in "${octets[@]}"; do
-            if (( 10#$part > 255 )) || [[ "$part" == 0?* ]]; then
-                echo "错误: 无效的 IPv4 地址" >&2
-                return 1
-            fi
-        done
-    fi
-    # shellcheck disable=SC2034  # NOW 供 detector.sh 模块读取
+    local ip="${1:-}"
+    [[ -n "$ip" ]] || { echo "用法: swiftban ban <IP>" >&2; return 1; }
+    ip=$(wl_normalize_ip "$ip") || { echo "错误: ban 只接受合法的单个 IP" >&2; return 1; }
+    # shellcheck disable=SC2034
     NOW=$(date +%s)
     det_ban "$ip" "手动封禁"
 }
 
 cmd_unban() {
     local ip="${1:-}"
-    [[ -z "$ip" ]] && { echo "用法: swiftban unban <IP>"; exit 1; }
+    [[ -n "$ip" ]] || { echo "用法: swiftban unban <IP>" >&2; return 1; }
+    ip=$(wl_normalize_ip "$ip") || { echo "错误: unban 只接受合法的单个 IP" >&2; return 1; }
     fw_unban "$ip" || return 1
     if [[ -f "${BANLIST}" ]]; then
-        # 按 IP 字段固定匹配删除，避免 sed 正则注入
         local tmp
         tmp=$(mktemp "$STATE_DIR/.unban.XXXXXX") || return 1
-        if awk -v ip="$ip" -F'|' '$1 != ip' "${BANLIST}" > "$tmp" && mv "$tmp" "${BANLIST}"; then :
+        if SWIFTBAN_IP="$ip" awk -F'|' "$(ip_awk)"'
+            ip_canon($1)!=ENVIRON["SWIFTBAN_IP"] {print}
+        ' "$BANLIST" > "$tmp" && mv "$tmp" "$BANLIST"; then :
         else rm -f "$tmp"; return 1; fi
     fi
     log_action "UNBAN(manual) $ip"
@@ -180,31 +168,34 @@ cmd_whitelist() {
 }
 
 cmd_install_cron() {
-    local cronline="* * * * * /usr/local/bin/swiftban run >> ${STATE_DIR}/cron.log 2>&1"
-    if crontab -l 2>/dev/null | grep -q "swiftban run"; then
-        echo "cron 已存在"
-        return 0
-    fi
-    (crontab -l 2>/dev/null; echo "$cronline") | crontab -
-    echo "已安装 cron: $cronline"
+    rt_require_root || return 1
+    rt_install_cron "$SWIFTBAN_ENTRY" "$SWIFTBAN_CONF" "$STATE_DIR"
 }
 
 cmd_configtest() {
+    local failed=0
     load_libs || return 1
     det_check_config || return 1
+    wl_check_config || return 1
     echo "=== 配置检查 ==="
     echo "日志格式: ${LOG_FORMAT}"
-    echo "日志目录: ${LOG_DIR} $([[ -d "$LOG_DIR" ]] && echo '✓' || echo '✗ 不存在')"
-    echo "状态目录: ${STATE_DIR} $([[ -d "$STATE_DIR" ]] && echo '✓' || echo '✗ 不存在')"
-    echo "防火墙链: ${FIREWALL_CHAIN} $(iptables -L "$FIREWALL_CHAIN" -n >/dev/null 2>&1 && echo '✓' || echo '✗ 不可用')"
+    if [[ -d "$LOG_DIR" && -r "$LOG_DIR" && -x "$LOG_DIR" ]]; then echo "日志目录: $LOG_DIR ✓"
+    else echo "日志目录: $LOG_DIR ✗ 不存在或不可读取"; failed=1; fi
+    if [[ -d "$STATE_DIR" && -r "$STATE_DIR" && -w "$STATE_DIR" && -x "$STATE_DIR" ]]; then echo "状态目录: $STATE_DIR ✓"
+    else echo "状态目录: $STATE_DIR ✗ 不存在或不可读写"; failed=1; fi
+    if command -v iptables >/dev/null 2>&1 && iptables -L "$FIREWALL_CHAIN" -n >/dev/null 2>&1; then echo "防火墙链: $FIREWALL_CHAIN ✓"
+    else echo "防火墙链: $FIREWALL_CHAIN ✗ iptables 缺失、链不可用或权限不足"; failed=1; fi
     if command -v ip6tables >/dev/null 2>&1; then
         echo "IPv6 工具: ip6tables 已安装"
-    else
-        echo "IPv6 工具: 未安装 ip6tables（可选，IPv4 功能不受影响）"
-    fi
-    echo "白名单文件: ${WHITELIST_FILE} $([[ -f "$WHITELIST_FILE" ]] && echo '✓' || echo '✗ 不存在')"
+        if ! ip6tables -L "$FIREWALL_CHAIN" -n >/dev/null 2>&1; then
+            echo "IPv6 防火墙链: $FIREWALL_CHAIN ✗ 不可用或权限不足"; failed=1
+        fi
+    else echo "IPv6 工具: 未安装 ip6tables（可选，IPv4 功能不受影响）"; fi
+    if [[ -r "$WHITELIST_FILE" && -f "$WHITELIST_FILE" ]]; then echo "白名单文件: $WHITELIST_FILE ✓"
+    else echo "白名单文件: $WHITELIST_FILE ✗ 不存在或不可读取"; failed=1; fi
     echo
     echo "阈值: 444=${LIMIT_444} 扫描=${LIMIT_SCAN} 恶意路径=${LIMIT_EVILPATH} 载荷=${LIMIT_PAYLOAD} UA=${LIMIT_UA} 爆破=${LIMIT_AUTH} 接口=${LIMIT_API} 速率=${LIMIT_API_RATE} 空UA=${LIMIT_EMPTYUA}"
+    return "$failed"
 }
 
 #---------------- 帮助 ----------------
@@ -229,6 +220,7 @@ SwiftBan v${SWIFTBAN_VERSION} - Nginx 攻击检测与自动封禁
   whitelist list       列出白名单
   install-cron         安装定时任务（每分钟）
   configtest           配置检查
+  doctor               运维诊断并提示修复方法
   version              版本信息
 
 配置: ${SWIFTBAN_CONF}
@@ -242,7 +234,7 @@ main() {
     case "$cmd" in
         version|-v|--version) echo "SwiftBan v${SWIFTBAN_VERSION}"; return ;;
         help|-h|--help) usage; return ;;
-        run|start|stop|status|list|ls|ban|unban|whitelist|wl|install-cron|configtest|__worker) ;;
+        run|start|stop|status|list|ls|ban|unban|whitelist|wl|install-cron|configtest|doctor|__worker) ;;
         *) usage; return 1 ;;
     esac
     load_config
@@ -262,6 +254,7 @@ main() {
             esac ;;
         install-cron) cmd_install_cron ;;
         configtest) cmd_configtest ;;
+        doctor) (( $# == 0 )) || return 1; rt_doctor ;;
         __worker) (( $# == 3 )) || return 1; rt_worker "$@" ;;
     esac
 }

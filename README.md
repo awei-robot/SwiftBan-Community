@@ -65,15 +65,18 @@ WHITELIST=127.0.0.1,::1,192.168.224.1   # 白名单
 
 ```bash
 swiftban run --dry-run     # 演练模式：只检测不封禁（建议先跑 1-2 天观察）
-swiftban list --dry-run    # 查看最近一次完整演练候选，独立于真实封禁列表
+swiftban list --dry-run    # 查看最近演练候选及复核信息
 swiftban run               # 正式检测（cron 每分钟自动执行）
 swiftban stop              # 终止当前扫描、撤销管理的规则，保留banlist和TTL
 swiftban start             # 恢复未过期封禁并立即正式扫描
 swiftban status            # 分别查看当前执行、最近模式和定时任务配置
+sudo swiftban doctor       # 检查依赖、配置、防火墙、状态和调度并给出修复提示
 swiftban list              # 列出封禁 IP
 swiftban ban 1.2.3.4       # 手动封禁
 swiftban unban 1.2.3.4     # 手动解封
 swiftban whitelist add 10.0.0.0/8   # 白名单管理
+swiftban whitelist remove 10.0.0.0/8
+swiftban whitelist list
 ```
 
 ### 定时任务
@@ -129,6 +132,7 @@ banlist.txt 持久化 / TTL 自动解封 / 规则自动恢复
 
 ```bash
 bash tests/test_detector.sh     # 白名单、格式/时区、字段边界、轮转、决策和故障回归
+bash tests/test_maintenance.sh  # IPv6规范化、状态读写失败、严格配置和cron安装回归
 shellcheck bin/swiftban.sh lib/*.sh tests/test*.sh install/install.sh
 bash tests/test_runtime.sh      # Linux真实进程会话/锁测试，防火墙与调度使用替身
 ```

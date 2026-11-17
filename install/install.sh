@@ -97,11 +97,18 @@ EOF
 }
 
 install_cron() {
+    local ans conf
     read -r -p "是否安装正式检测 cron（每分钟执行，单次 --dry-run 不改变它）? [Y/n] " ans
     case "${ans:-Y}" in
         [Yy]*)
-            (crontab -l 2>/dev/null | grep -v "swiftban run"; echo "* * * * * ${SWIFTBAN_BIN} run >> ${SWIFTBAN_HOME}/state/cron.log 2>&1") | crontab -
-            info "cron 已安装"
+            # shellcheck disable=SC1090,SC1091
+            source "$SCRIPT_DIR/lib/runtime.sh" || return 1
+            conf="${SWIFTBAN_CONF:-$SWIFTBAN_HOME/swiftban.conf}"
+            (
+                # shellcheck disable=SC1090
+                source "$conf" || exit 1
+                rt_install_cron "$SWIFTBAN_BIN" "$conf" "${STATE_DIR:-$SWIFTBAN_HOME/state}"
+            )
             ;;
         *) info "跳过 cron 安装" ;;
     esac

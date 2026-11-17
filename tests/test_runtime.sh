@@ -126,7 +126,7 @@ check "失败保留上次完整结果" test "$(cksum "$STATE/dry-run.tsv")" = "$
 printf '\nLOG_DIR="%s"\n' "$LOGS" >> "$SWIFTBAN_CONF"
 : > "$LOGS/site_access.log"
 cli run --dry-run
-check "零候选覆盖旧演练结果" test "$(wc -l < "$STATE/dry-run.tsv")" -eq 4
+check "零候选覆盖旧演练结果并保留复核元数据" bash -c 'grep -q "^# run_id[[:space:]]" "$1" && grep -q "^# thresholds[[:space:]]" "$1" && ! grep -q "^[0-9]" "$1"' _ "$STATE/dry-run.tsv"
 
 new_case stop
 now=$(date -u +%s)

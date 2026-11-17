@@ -358,6 +358,72 @@ rt_mutate() (
     "$@"
 )
 
+# cron 使用 /bin/sh，路径采用 POSIX 单引号；拒绝 cron 会额外解释的百分号。
+rt_cron_quote() {
+    local value="$1" escaped="'\\''"
+    [[ "$value" != *%* && ! "$value" =~ [[:cntrl:]] ]] || return 1
+    printf "'"
+    while [[ "$value" == *"'"* ]]; do
+        printf '%s%s' "${value%%\'*}" "$escaped"
+        value="${value#*\'}"
+    done
+    printf "%s'" "$value"
+}
+
+rt_cron_line() {
+    local entry conf output config="$2" state="$3"
+    if [[ -f "$config" ]]; then
+        config="$(cd "$(dirname "$config")" && pwd -P)/$(basename "$config")" || return 1
+    fi
+    if [[ -d "$state" ]]; then state=$(cd "$state" && pwd -P) || return 1; fi
+    entry=$(rt_cron_quote "$1") && conf=$(rt_cron_quote "$config") &&
+        output=$(rt_cron_quote "$state/cron.log") || return 1
+    printf '* * * * * SWIFTBAN_CONF=%s %s run >> %s 2>&1' "$conf" "$entry" "$output"
+}
+
+# 安装器与 CLI 共用：构造完整文件后才提交，任何读取/生成错误均保留原任务。
+rt_install_cron() (
+    local entry="$1" conf="$2" state="$3" work read_code line value
+    for value in "$entry" "$conf" "$state"; do
+        [[ "$value" != *%* && ! "$value" =~ [[:cntrl:]] ]] || {
+            printf '错误: cron 路径不能包含百分号或控制字符\n' >&2; return 1;
+        }
+    done
+    [[ "$entry" == /* && -f "$conf" && -d "$state" ]] || {
+        printf '错误: cron 需要绝对入口路径、已存在的配置文件和状态目录\n' >&2; return 1;
+    }
+    conf="$(cd "$(dirname "$conf")" && pwd -P)/$(basename "$conf")" || return 1
+    state=$(cd "$state" && pwd -P) || return 1
+    line=$(rt_cron_line "$entry" "$conf" "$state") || {
+        printf '错误: cron 路径不能包含百分号或控制字符\n' >&2; return 1;
+    }
+    work=$(mktemp -d) || return 1
+    trap 'rm -rf "$work"' EXIT
+    if LC_ALL=C crontab -l > "$work/current" 2> "$work/error"; then :
+    else
+        read_code=$?
+        if [[ "$read_code" != 1 ]] || ! grep -q '^no crontab for ' "$work/error"; then
+            printf '错误: 无法读取现有 cron，未修改定时任务\n' >&2
+            cat "$work/error" >&2
+            return 1
+        fi
+        : > "$work/current" || return 1
+    fi
+    if ! SWIFTBAN_CRONLINE="$line" SWIFTBAN_CRONCONF="$conf" SWIFTBAN_CRONENTRY="$entry" awk '
+        /^[[:space:]]*#/ {print;next}
+        $0==ENVIRON["SWIFTBAN_CRONLINE"] {next}
+        ENVIRON["SWIFTBAN_CRONCONF"]=="/etc/swiftban/swiftban.conf" &&
+            $6==ENVIRON["SWIFTBAN_CRONENTRY"] && $7=="run" {next}
+        {print}
+    ' "$work/current" > "$work/next" ||
+        ! printf '%s\n' "$line" >> "$work/next"; then
+        printf '错误: 生成 cron 失败，未修改定时任务\n' >&2
+        return 1
+    fi
+    if ! crontab "$work/next"; then printf '错误: cron 安装失败\n' >&2; return 1; fi
+    printf 'cron 已安装: %s\n' "$line"
+)
+
 rt_mode_text() {
     case "$1" in formal) printf 'formal（正式）' ;; dry-run) printf 'dry-run（演练）' ;; *) printf '未知模式' ;; esac
 }
@@ -412,12 +478,26 @@ rt_show_status() {
     if cnt=$(fw_managed_count); then echo "实际管理的规则: $cnt"; else echo "实际管理的规则: 无法确认"; fi
     if [[ -r "$STATE_DIR/dry-run.tsv" ]]; then
         echo "演练结果: $STATE_DIR/dry-run.tsv（最近一次完整结果，使用 list --dry-run 查看）"
-        head -n 4 "$STATE_DIR/dry-run.tsv"
+        awk -F '\t' '
+            /^# run_id\t/ {print "演练运行: " $2}
+            /^# started_utc\t/ {print "演练开始: " $2}
+            /^# finished_utc\t/ {print "演练结束: " $2}
+            /^# file_mtime_filter\t/ {print "文件筛选: 最近3分钟修改"}
+            /^# entry_window_seconds\t/ {print "日志时间窗口: " $2 " 秒"}
+            /^# thresholds\t/ {print "阈值摘要: " $2}
+            /^# file\t/ {files++}
+            /^# parse\t/ {valid+=$3; invalid+=$4}
+            /^IP\t/ {next}
+            /^[^#]/ && NF>=4 {candidates++}
+            END {printf "来源文件: %d | 有效日志: %d | 格式错误: %d | 候选: %d\n",files,valid,invalid,candidates}
+        ' "$STATE_DIR/dry-run.tsv"
     else echo "演练结果: 无可读的完整结果"; fi
 }
 
 rt_cron_mode() {
-    local line="$1" i=7 mode=正式 word
+    local line="$1" i=7 mode=正式 word expected
+    if expected=$(rt_cron_line "$SWIFTBAN_ENTRY" "$SWIFTBAN_CONF" "$STATE_DIR") &&
+        [[ "$line" == "$expected" ]]; then echo "正式"; return; fi
     local -a words
     read -r -a words <<< "$line"
     if (( ${#words[@]} < 7 )) ||
@@ -439,13 +519,14 @@ rt_cron_mode() {
 }
 
 rt_show_schedule() {
-    local text line found=0
+    local text line found=0 match
     echo "=== 定时任务配置（当前用户 cron / 标准 swiftban.timer）==="
     if command -v crontab >/dev/null 2>&1; then
         if text=$(crontab -l 2>&1); then
             while IFS= read -r line; do
                 [[ "$line" =~ ^[[:space:]]*# ]] && continue
-                if [[ "$line" =~ (^|[[:space:]/])swiftban(\.sh)?[[:space:]]+run([[:space:]]|$) ]]; then
+                match="${line//\'/}"
+                if [[ "$match" =~ (^|[[:space:]/])swiftban(\.sh)?[[:space:]]+run([[:space:]]|$) ]]; then
                     found=1
                     echo "cron: $line"
                     echo "cron 推断模式: $(rt_cron_mode "$line")（以原始命令为准）"
@@ -470,10 +551,96 @@ rt_show_schedule() {
 }
 
 rt_list_dry() {
-    echo "=== 演练候选：只检测，未实际封禁 ==="
+    echo "=== 最近一次完整演练及复核信息（演练未实际封禁）==="
     if [[ -r "$STATE_DIR/dry-run.tsv" ]]; then
         cat "$STATE_DIR/dry-run.tsv"
     else
         echo "尚无可读的完整演练结果"
     fi
+}
+
+rt_doctor() {
+    local failures=0 warnings=0 name state_count=0 v4_rules v6_rules expected cron_text line found_cron=0 found_timer=0
+    local -a deps=(iptables awk grep find stat sort flock setsid)
+    printf 'SwiftBan 运维诊断 v%s\n' "$SWIFTBAN_VERSION"
+    for name in "${deps[@]}"; do
+        if command -v "$name" >/dev/null 2>&1; then printf '通过 依赖: %s\n' "$name"
+        else printf '失败 缺少命令: %s\n  修复: 安装 %s 后重试\n' "$name" "$name"; failures=$((failures+1)); fi
+    done
+    if command -v ip6tables >/dev/null 2>&1; then
+        printf '通过 可选依赖: ip6tables\n'
+    else printf '警告 可选依赖 ip6tables 不存在，IPv6 自动封禁不可用\n'; warnings=$((warnings+1)); fi
+
+    if det_check_config && wl_check_config; then printf '通过 配置值与白名单\n'
+    else printf '失败 配置值或白名单无效\n  修复: sudo swiftban configtest 并按错误提示修改 %s\n' "$SWIFTBAN_CONF"; failures=$((failures+1)); fi
+    if [[ -d "$LOG_DIR" && -r "$LOG_DIR" && -x "$LOG_DIR" ]]; then printf '通过 日志目录可读取: %s\n' "$LOG_DIR"
+    else printf '失败 日志目录不存在或不可读取: %s\n  修复: 检查 LOG_DIR 和运行用户权限\n' "$LOG_DIR"; failures=$((failures+1)); fi
+    if [[ -d "$STATE_DIR" && -r "$STATE_DIR" && -w "$STATE_DIR" && -x "$STATE_DIR" ]]; then printf '通过 状态目录可读写: %s\n' "$STATE_DIR"
+    else printf '失败 状态目录不存在或不可读写: %s\n  修复: 创建 STATE_DIR 并授权 SwiftBan 运行用户读写\n' "$STATE_DIR"; failures=$((failures+1)); fi
+    if (( EUID == 0 )); then printf '通过 当前用户为 root\n'
+    else printf '警告 当前用户不是 root，防火墙及进程控制检查可能无法完成\n'; warnings=$((warnings+1)); fi
+
+    if [[ -r "$STATE_DIR/banlist.txt" ]]; then
+        state_count=$(awk 'END {print NR+0}' "$STATE_DIR/banlist.txt")
+        if awk -F'|' 'NF!=4 || $1=="" || $2!~/^[0-9]+$/ || $3!~/^[0-9]+$/ {bad=1} END {exit bad}' "$STATE_DIR/banlist.txt"; then
+            printf '通过 banlist 格式（%s 条）\n' "$state_count"
+        else printf '失败 banlist 含有无效记录\n  修复: 备份后检查 %s/banlist.txt 中 IP|时间戳|TTL|原因 四字段记录\n' "$STATE_DIR"; failures=$((failures+1)); fi
+    else printf '失败 banlist 不存在或不可读取\n  修复: 检查 STATE_DIR 权限；需要初始化时运行 sudo swiftban start\n'; failures=$((failures+1)); fi
+
+    if command -v iptables >/dev/null 2>&1 && iptables -L "$FIREWALL_CHAIN" -n >/dev/null 2>&1; then
+        printf '通过 IPv4 防火墙链可用: %s\n' "$FIREWALL_CHAIN"
+        if fw_inventory iptables > /dev/null; then
+            v4_rules=$(fw_inventory iptables | awk 'END {print NR+0}')
+            printf '状态 IPv4 管理规则: %s；banlist 记录: %s\n' "$v4_rules" "$state_count"
+            if [[ "$v4_rules" =~ ^[0-9]+$ && "$state_count" =~ ^[0-9]+$ ]] && (( v4_rules > state_count )); then
+                printf '警告 IPv4 存在无对应 banlist 的已标记规则，stop 可清理本实例规则\n'; warnings=$((warnings+1))
+            fi
+        else printf '失败 无法读取 IPv4 管理规则清单\n  修复: 检查 root 权限、iptables -S 和链配置\n'; failures=$((failures+1)); fi
+    else printf '失败 IPv4 防火墙链不可用: %s\n  修复: 确认链已创建；裸机 Nginx 通常设置 FIREWALL_CHAIN="INPUT"\n' "$FIREWALL_CHAIN"; failures=$((failures+1)); fi
+    if command -v ip6tables >/dev/null 2>&1; then
+        if ip6tables -L "$FIREWALL_CHAIN" -n >/dev/null 2>&1 && fw_inventory ip6tables >/dev/null; then
+            v6_rules=$(fw_inventory ip6tables | awk 'END {print NR+0}')
+            printf '通过 IPv6 防火墙链可用: %s（管理规则 %s）\n' "$FIREWALL_CHAIN" "$v6_rules"
+        else printf '失败 IPv6 防火墙链不可用或规则无法读取: %s\n  修复: 检查 ip6tables 和对应链；仅需 IPv4 时可卸载可选 ip6tables\n' "$FIREWALL_CHAIN"; failures=$((failures+1)); fi
+    elif fw_needs_ipv6; then printf '失败 banlist 含 IPv6 记录但 ip6tables 缺失，规则撤销情况未知\n  修复: 安装 ip6tables，确认 IPv6 规则后运行 sudo swiftban stop\n'; failures=$((failures+1)); fi
+
+    if [[ -e "$STATE_DIR/stopped.tsv" ]]; then
+        IFS=$'\t' read -r state _ < "$STATE_DIR/stopped.tsv" || state=invalid
+        case "$state" in
+            stopped) printf '警告 正式检测当前已停止；需要恢复时运行 sudo swiftban start\n'; warnings=$((warnings+1)) ;;
+            cleanup_failed) printf '失败 上次 stop 未完成；修复防火墙后运行 sudo swiftban stop\n'; failures=$((failures+1)) ;;
+            stopping|starting) printf '警告 当前控制状态为 %s；用 sudo swiftban status 确认\n' "$state"; warnings=$((warnings+1)) ;;
+            *) printf '失败 无法识别停止状态文件\n  修复: 检查 %s/stopped.tsv\n' "$STATE_DIR"; failures=$((failures+1)) ;;
+        esac
+    fi
+    if [[ -e "$STATE_DIR/active.tsv" ]]; then
+        if rt_read_active && rt_group_state; then printf '通过 扫描运行中: %s PID=%s 阶段=%s\n' "$(rt_mode_text "$RT_MODE")" "$RT_PID" "$(cat "$STATE_DIR/.run-$RT_ID/phase" 2>/dev/null || printf unknown)"
+        elif rt_read_active; then printf '警告 存在已结束或不可验证的运行记录；查看 status，确认后执行 sudo swiftban stop\n'; warnings=$((warnings+1))
+        else printf '失败 active.tsv 格式无效，停止操作前先备份状态目录\n'; failures=$((failures+1)); fi
+    else printf '通过 无活动扫描记录\n'; fi
+
+    if command -v crontab >/dev/null 2>&1; then
+        if cron_text=$(crontab -l 2>/dev/null); then
+            while IFS= read -r line; do
+                [[ "$line" == *swiftban* && "$line" == *run* ]] || continue
+                found_cron=1
+                expected=$(rt_cron_line "$SWIFTBAN_ENTRY" "$SWIFTBAN_CONF" "$STATE_DIR" 2>/dev/null || true)
+                if [[ -n "$expected" && "$line" == "$expected" ]]; then printf '通过 cron 指向当前入口和配置: %s\n' "$line"
+                else printf '警告 cron 命令可能使用不同入口或配置: %s\n  修复: sudo swiftban install-cron（保留其他任务）\n' "$line"; warnings=$((warnings+1)); fi
+            done <<< "$cron_text"
+            (( found_cron )) || printf '提示 当前用户未配置 SwiftBan cron\n'
+        else printf '提示 当前用户没有可读取的 crontab\n'; fi
+    else printf '提示 系统未安装 crontab\n'; fi
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl show swiftban.timer -p LoadState -p ActiveState -p UnitFileState >/dev/null 2>&1; then
+            if [[ "$(systemctl show swiftban.timer -p LoadState --value 2>/dev/null)" == loaded ]]; then
+                found_timer=1
+                if systemctl is-active --quiet swiftban.timer; then printf '通过 标准 systemd timer 正在运行\n'
+                else printf '警告 标准 systemd timer 已加载但未运行；运行 sudo systemctl enable --now swiftban.timer\n'; warnings=$((warnings+1)); fi
+            fi
+        fi
+    fi
+    if (( ! found_cron && ! found_timer )); then printf '警告 未发现 SwiftBan 定时任务\n  修复: 运行 sudo swiftban install-cron，或启用 deploy/ 中的 systemd timer\n'; warnings=$((warnings+1)); fi
+    printf '诊断完成：失败=%s 警告=%s\n' "$failures" "$warnings"
+    (( failures == 0 ))
 }

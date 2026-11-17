@@ -96,44 +96,10 @@ fw_inventory() (
     trap 'rm -f "$tmp"' EXIT
     LC_ALL=C "$tool" -S > "$tmp" || return 1
     [[ -f "$state" ]] || state=/dev/null
-    SWIFTBAN_OWNER="$owner" SWIFTBAN_CHAIN="$FIREWALL_CHAIN" SWIFTBAN_WANTED="$wanted" awk '
-    function ipv4(s,a,n,i) {
-        n=split(s,a,".")
-        if(n!=4) return ""
-        for(i=1;i<=4;i++) if(a[i]!~/^[0-9]+$/ || a[i]+0>255) return ""
-        return (a[1]+0) "." (a[2]+0) "." (a[3]+0) "." (a[4]+0)
-    }
-    function hex(s, i,v,d) {
-        v=0; s=tolower(s)
-        for(i=1;i<=length(s);i++) {
-            d=index("0123456789abcdef",substr(s,i,1))-1
-            if(d<0) return -1
-            v=v*16+d
-        }
-        return v
-    }
-    function canon(s, p,a,b,n,m,i,r,v,tail) {
+    SWIFTBAN_OWNER="$owner" SWIFTBAN_CHAIN="$FIREWALL_CHAIN" SWIFTBAN_WANTED="$wanted" awk "$(ip_awk)"'
+    function canon(s) {
         sub(/\/32$/,"",s); sub(/\/128$/,"",s)
-        if(index(s,":")==0) return ipv4(s)
-        if(s!~/^[0-9a-fA-F:.]+$/) return ""
-        if(index(s,".")) {
-            for(i=length(s);i>0 && substr(s,i,1)!=":";i--) {}
-            tail=ipv4(substr(s,i+1)); if(tail=="") return ""
-            split(tail,a,".")
-            s=substr(s,1,i) sprintf("%x:%x",a[1]*256+a[2],a[3]*256+a[4])
-        }
-        p=index(s,"::")
-        if(p) {
-            n=split(substr(s,1,p-1),a,":"); m=split(substr(s,p+2),b,":")
-            if(substr(s,1,p-1)=="") n=0
-            if(substr(s,p+2)=="") m=0
-            if(n+m>=8) return ""
-        } else {n=split(s,a,":");m=0;if(n!=8)return ""}
-        r=""
-        for(i=1;i<=n;i++) {v=hex(a[i]); if(a[i]=="" || v<0 || v>65535)return "";r=r sprintf("%04x",v)}
-        for(i=0;i<8-n-m;i++) r=r "0000"
-        for(i=1;i<=m;i++) {v=hex(b[i]); if(b[i]=="" || v<0 || v>65535)return "";r=r sprintf("%04x",v)}
-        return r
+        return ip_canon(s)
     }
     FILENAME==ARGV[1] {
         split($0,a,/\|/); key=canon(a[1]); if(key!="") legacy[key]=1
