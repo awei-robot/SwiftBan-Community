@@ -1,2 +1,5 @@
 # SwiftBan cron 示例（每分钟执行）
+# 这是正式检测；一次 run --dry-run 不会切换此任务的模式。
+# stop 保留本条配置但跳过正式检测；start 恢复规则并立即正式检测。
+# 若要周期演练，请明确将下行 run 改为 run --dry-run。
 * * * * * /usr/local/bin/swiftban run >> /etc/swiftban/state/cron.log 2>&1

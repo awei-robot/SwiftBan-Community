@@ -377,7 +377,7 @@ if (
     SWIFTBAN_BIN="$T/installed/swiftban"
     mkdir -p "$T/installed" || exit 1
     install_files || exit 1
-    for module in logger firewall whitelist detector; do
+    for module in logger firewall whitelist runtime detector; do
         test -r "$SWIFTBAN_LIB/$module.sh" || exit 1
     done
     SWIFTBAN_CONF="$SWIFTBAN_HOME/swiftban.conf" "$SWIFTBAN_BIN" configtest > "$T/installed/output" || exit 1
@@ -463,6 +463,9 @@ fi
 if (
     # shellcheck disable=SC1090,SC1091
     source "$PROJECT_DIR/install/install.sh"
+    check_platform() { return 0; }
+    flock() { return 0; }
+    setsid() { return 0; }
     command() {
         if [[ "$1" == -v && "$2" == iptables ]]; then return 1; fi
         builtin command "$@"
@@ -479,6 +482,9 @@ if (
     source "$PROJECT_DIR/install/install.sh"
     # shellcheck disable=SC2329 # command -v 检测的命令替身。
     iptables() { return 0; }
+    check_platform() { return 0; }
+    flock() { return 0; }
+    setsid() { return 0; }
     command() {
         if [[ "$1" == -v && "$2" == ip6tables ]]; then return 1; fi
         builtin command "$@"

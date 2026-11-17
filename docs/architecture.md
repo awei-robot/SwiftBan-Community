@@ -19,6 +19,7 @@ lib/
   logger.sh              日志与审计
   firewall.sh            防火墙抽象（iptables/ip6tables）
   whitelist.sh           白名单（IP/CIDR/文件）
+  runtime.sh             生命周期、进程会话、锁和运行元数据
   detector.sh            检测引擎（11 维度）+ 状态管理
 ```
 
@@ -102,10 +103,23 @@ NPM standard、NPM proxy、combined 统一输出 TSV：`epoch、IP、最终状�
 ├── banlist.txt     封禁记录: IP|时间戳|TTL|原因
 ├── ban.log         操作审计日志
 ├── whitelist.txt   动态白名单（IP/CIDR）
-└── cron.log        cron 执行日志
+├── cron.log        cron 执行日志
+├── dry-run.tsv     最近一次完整演练候选，不参与恢复
+├── last-run.tsv    最近一次扫描模式与结果
+├── active.tsv      当前独立会话身份
+├── stopped.tsv     跨重启保留的停止门控（存在时正式run跳过）
+└── .instance-id    本实例防火墙规则归属
 ```
 
 **恢复机制**：cron 每次运行先 `restore`（规则丢失自动重建），再 `unban_expired`（TTL 到期自动解封）。
+
+正式扫描由受监管的独立会话执行，扫描锁随会话及子进程存活；父协调进程释放其扫描锁副本。控制锁只保护启动登记、停止门控和最终记录等短事务。工作进程在确认登记并收到放行前不能扫描或操作防火墙，锁与 PID 文件不能互相替代。
+
+`stop` 先写停止标记，核对 PID、启动时间、PGID、SID、boot ID 后终止会话；TERM 最多等待5秒，必要时重新核验并升级为 KILL，再等待退出和锁释放。身份不明时不发送信号。清理时按实例 comment 标记删除新规则，历史无标记规则仅按 banlist 与配置链精确匹配，不 flush 共享链。banlist 保留不变，停止期间 TTL 继续计时。
+
+`start` 使用同一套会话监管，在恢复阶段也允许 stop；过期/白名单记录不恢复。恢复失败回滚并保留停止门控，成功后解除门控并立即正式扫描。缺少可选 IPv6 工具时明确显示降级或无法确认撤销，不假装成功。任何正式任务和手动 ban 均服从停止门控，显式演练除外。
+
+banlist 采用同目录临时文件加原子重命名写入；即使在规则写入后被中断，未提交状态也不会留下半行，已写但未持久化的本实例规则由停止清理。演练结果同样只在完整成功后发布；失败保留上次完整结果。运行文件使用固定字段解析，不能通过 source/eval 读取。
 
 ## 七、安全边界
 

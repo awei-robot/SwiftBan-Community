@@ -11,7 +11,11 @@ _banlog_file() { echo "${STATE_DIR}/ban.log"; }
 
 # 封禁（规则写入成功才记录状态，避免 banlist 与防火墙不一致）
 det_ban() {
-    local ip="$1" reason="$2"
+    local ip="$1" reason="$2" tmp state
+    if declare -F rt_may_enforce >/dev/null && ! rt_may_enforce; then
+        log_error "正式检测已停止，拒绝新增封禁"
+        return 1
+    fi
     # 白名单静默跳过
     if wl_is_whitelisted "$ip"; then
         return 0
@@ -22,40 +26,71 @@ det_ban() {
     if ! fw_ban "$ip"; then
         return 1
     fi
-    echo "${ip}|${NOW}|${BAN_TTL}|${reason}" >> "$(_state_file)"
+    state=$(_state_file)
+    tmp=$(mktemp "$STATE_DIR/.banlist-${RT_RUN_ID:-standalone}.XXXXXX") || { fw_unban "$ip"; return 1; }
+    if { [[ ! -f "$state" ]] || cat "$state"; } > "$tmp" &&
+        printf '%s|%s|%s|%s\n' "$ip" "$NOW" "$BAN_TTL" "$reason" >> "$tmp" &&
+        mv "$tmp" "$state"; then :
+    else
+        rm -f "$tmp"
+        fw_unban "$ip" || true
+        log_error "封禁状态写入失败: $ip"
+        return 1
+    fi
     log_action "BAN $ip | ttl=${BAN_TTL}s | $reason"
 }
 
 # 恢复历史封禁（规则丢失后）
 det_restore() {
+    local ip ts ttl reason failed=0
     while IFS='|' read -r ip ts ttl reason; do
         [[ -z "$ip" ]] && continue
-        if [[ "$ttl" != "0" ]] && (( NOW - ts > ttl )); then
+        if declare -F rt_may_enforce >/dev/null && ! rt_may_enforce; then return 1; fi
+        if [[ "$ttl" != "0" ]] && (( NOW - ts >= ttl )); then
+            continue
+        fi
+        wl_is_whitelisted "$ip" && continue
+        if [[ "$ip" == *:* ]] && ! command -v ip6tables >/dev/null 2>&1; then
+            log_warn "缺少 ip6tables，保留 IPv6 记录并跳过恢复: $ip"
             continue
         fi
         if ! fw_is_banned "$ip"; then
             if ! fw_ban "$ip"; then
+                failed=1
                 continue
             fi
             log_action "RESTORE $ip | $reason"
         fi
     done < "$(_state_file)"
+    (( failed == 0 ))
 }
 
 # 过期解封
 det_unban_expired() {
-    local tmp
-    tmp=$(mktemp)
+    local tmp ip ts ttl reason failed=0
+    tmp=$(mktemp "$STATE_DIR/.expired-${RT_RUN_ID:-standalone}.XXXXXX") || return 1
     while IFS='|' read -r ip ts ttl reason; do
         [[ -z "$ip" ]] && continue
-        if [[ "$ttl" != "0" ]] && (( NOW - ts > ttl )); then
-            fw_unban "$ip"
-            log_action "UNBAN(expired) $ip | $reason"
+        if [[ "$ttl" != "0" ]] && (( NOW - ts >= ttl )); then
+            if [[ "$ip" == *:* ]] && ! command -v ip6tables >/dev/null 2>&1; then
+                log_warn "IPv6 过期规则无法确认撤销，保留过期记录等待核验: $ip"
+                printf '%s|%s|%s|%s\n' "$ip" "$ts" "$ttl" "$reason" >> "$tmp"
+            elif fw_unban "$ip"; then
+                log_action "UNBAN(expired) $ip | $reason"
+            else
+                printf '%s|%s|%s|%s\n' "$ip" "$ts" "$ttl" "$reason" >> "$tmp"
+                failed=1
+            fi
         else
             echo "${ip}|${ts}|${ttl}|${reason}" >> "$tmp"
         fi
     done < "$(_state_file)"
-    mv "$tmp" "$(_state_file)"
+    mv "$tmp" "$(_state_file)" || return 1
+    (( failed == 0 ))
+}
+
+det_phase() {
+    if declare -F rt_phase >/dev/null; then rt_phase "$1"; fi
 }
 
 #---------------- 日志解析与收集 ----------------
@@ -277,27 +312,34 @@ det_parse() {
 
 #---------------- 主检测流程 ----------------
 det_run() (
-    local dry_run="${1:-0}" workdir cnt lines source valid invalid expired future duplicate
+    local dry_run="${1:-0}" workdir cnt lines source valid invalid expired future duplicate dry_tmp="" candidates=""
     det_check_config || return 1
     if ! det_awk 'BEGIN {if(mktime("2026 11 12 00 00 00")<0 || "123" !~ /^[0-9]{3}$/) exit 1}' >/dev/null 2>&1; then
         log_error "当前 awk 需要支持 mktime 和区间正则，请安装 gawk 或较新版本 mawk"
         return 1
     fi
-    workdir=$(mktemp -d) || return 1
-    trap 'rm -rf "$workdir"' EXIT
+    if [[ -n "${RT_RUN_DIR:-}" ]]; then
+        workdir="$RT_RUN_DIR/work"
+        mkdir -p "$workdir" || return 1
+    else workdir=$(mktemp -d) || return 1; fi
+    trap 'rm -rf "$workdir"; if [[ -n "$dry_tmp" ]]; then rm -f "$dry_tmp"; fi' EXIT
     NOW=$(date -u +%s)
     NOW_EPOCH="$NOW"
     if [[ "$dry_run" != "1" ]]; then
+        if declare -F rt_may_enforce >/dev/null; then rt_may_enforce || return 1; fi
+        det_phase maintenance || return 1
         mkdir -p "$STATE_DIR" || return 1
         touch "$(_state_file)" "$(_banlog_file)" || return 1
-        det_restore
+        det_restore || return 1
         det_unban_expired || return 1
     fi
+    det_phase collecting || return 1
     if ! det_collect "$workdir"; then
         log_error "日志收集失败，本轮停止新增封禁"
         return 1
     fi
     : > "$workdir/stats.tsv" || return 1
+    det_phase parsing || return 1
     if ! det_parse "$workdir/input.tsv" "$workdir/recent.log" "$workdir/stats.tsv"; then
         log_error "日志解析程序失败，本轮停止新增封禁"
         return 1
@@ -308,11 +350,28 @@ det_run() (
             log_warn "日志 $source 存在无法解析的记录，已跳过"
         fi
     done < "$workdir/stats.tsv"
+    det_phase extracting || return 1
     if ! det_detect_all "$workdir"; then
         log_error "日志统计失败，本轮停止新增封禁"
         return 1
     fi
-    if [[ "$dry_run" == "1" ]]; then det_decide "$workdir" dry; else det_decide "$workdir"; fi
+    det_phase deciding || return 1
+    if [[ "$dry_run" == "1" ]]; then
+        mkdir -p "$STATE_DIR" || return 1
+        candidates="$workdir/candidates.tsv"
+        : > "$candidates" || return 1
+        det_decide "$workdir" dry "$candidates" || return 1
+        dry_tmp=$(mktemp "$STATE_DIR/.dry-run-${RT_RUN_ID:-standalone}.XXXXXX") || return 1
+        {
+            printf '# mode\tdry-run\n# started_epoch\t%s\n# finished_epoch\t%s\n' "$NOW_EPOCH" "$(date -u +%s)"
+            printf 'IP\t规则\t次数\t阈值\t分组\n'
+            cat "$candidates"
+        } > "$dry_tmp" && mv "$dry_tmp" "$STATE_DIR/dry-run.tsv" || return 1
+        dry_tmp=""
+    else
+        if declare -F rt_may_enforce >/dev/null; then rt_may_enforce || return 1; fi
+        det_decide "$workdir" || return 1
+    fi
     lines=$(wc -l < "$workdir/recent.log")
     cnt=$(fw_count)
     log_info "完成 | 窗口内 $lines 行 | 当前封禁 IPv4=${cnt%:*} IPv6=${cnt#*:}"
@@ -367,7 +426,7 @@ det_detect_all() {
 
 # 封禁决策
 det_decide() {
-    local wd="$1" mode="${2:-normal}"
+    local wd="$1" mode="${2:-normal}" candidates="${3:-}"
 
     _apply() {
         local file="$1" threshold="$2" fmt="$3" reason="$4"
@@ -383,28 +442,31 @@ det_decide() {
                     wl_is_whitelisted "$ip" && continue
                     fw_is_banned "$ip" && continue
                     log_info "[DRY-RUN] 将封禁 $ip | ${reason} ${count}次"
+                    if [[ -n "$candidates" ]]; then
+                        printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "$reason" "$count" "$threshold" "$rest" >> "$candidates" || return 1
+                    fi
                 else
-                    det_ban "$ip" "${reason} ${count}次"
+                    det_ban "$ip" "${reason} ${count}次" || return 1
                 fi
             fi
         done < "$file"
     }
 
-    _apply "${wd}/ip_444.txt"    "$LIMIT_444"    ip     "444攻击"
-    _apply "${wd}/ip_scan.txt"   "$LIMIT_SCAN"   ip     "扫描探测"
-    _apply "${wd}/ip_evilpath.txt" "$LIMIT_EVILPATH" ip "恶意路径"
-    _apply "${wd}/ip_payload.txt" "$LIMIT_PAYLOAD" ip    "漏洞载荷"
-    _apply "${wd}/ip_ua.txt"      "$LIMIT_UA"     ip     "可疑UA"
-    _apply "${wd}/ip_auth.txt"    "$LIMIT_AUTH"   ip     "登录爆破"
-    _apply "${wd}/ip_api.txt"     "$LIMIT_API"    ipuri  "单接口高频"
-    _apply "${wd}/ip_apirate.txt" "$LIMIT_API_RATE" iprate "单接口速率"
-    _apply "${wd}/ip_emptyua.txt" "$LIMIT_EMPTYUA" ip    "空UA"
+    _apply "${wd}/ip_444.txt"    "$LIMIT_444"    ip     "444攻击" || return 1
+    _apply "${wd}/ip_scan.txt"   "$LIMIT_SCAN"   ip     "扫描探测" || return 1
+    _apply "${wd}/ip_evilpath.txt" "$LIMIT_EVILPATH" ip "恶意路径" || return 1
+    _apply "${wd}/ip_payload.txt" "$LIMIT_PAYLOAD" ip    "漏洞载荷" || return 1
+    _apply "${wd}/ip_ua.txt"      "$LIMIT_UA"     ip     "可疑UA" || return 1
+    _apply "${wd}/ip_auth.txt"    "$LIMIT_AUTH"   ip     "登录爆破" || return 1
+    _apply "${wd}/ip_api.txt"     "$LIMIT_API"    ipuri  "单接口高频" || return 1
+    _apply "${wd}/ip_apirate.txt" "$LIMIT_API_RATE" iprate "单接口速率" || return 1
+    _apply "${wd}/ip_emptyua.txt" "$LIMIT_EMPTYUA" ip    "空UA" || return 1
 
     # 高频观察（仅记录）
     while read -r count ip; do
         if (( count >= LIMIT_HIGHFREQ )); then
             if ! fw_is_banned "$ip" && ! wl_is_whitelisted "$ip"; then
-                log_info "WATCH 高频 $ip ${count}次/${WINDOW}s"
+                log_info "WATCH 高频 $ip ${count}次/${WINDOW}s" || true
             fi
         fi
     done < "${wd}/ip_freq.txt"

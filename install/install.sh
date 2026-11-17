@@ -23,8 +23,17 @@ check_root() {
     fi
 }
 
+check_platform() {
+    [[ "$(uname -s)" == Linux && -r /proc/self/stat ]] || { error "安装需要 Linux /proc"; exit 1; }
+    if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 1) )); then
+        error "安装需要 Bash 4.1 或更新版本"
+        exit 1
+    fi
+}
+
 check_deps() {
-    local deps=(iptables awk grep find stat sort)
+    check_platform || return 1
+    local deps=(iptables awk grep find stat sort flock setsid)
     local missing=()
     for d in "${deps[@]}"; do
         command -v "$d" >/dev/null 2>&1 || missing+=("$d")
@@ -58,7 +67,7 @@ install_files() {
     # 主程序
     install -m 755 "${SCRIPT_DIR}/bin/swiftban.sh" "${SWIFTBAN_BIN}" || return 1
     # 模块
-    for lib in logger firewall whitelist detector; do
+    for lib in logger firewall whitelist runtime detector; do
         install -m 644 "${SCRIPT_DIR}/lib/${lib}.sh" "${SWIFTBAN_LIB}/${lib}.sh" || return 1
     done
     # 配置
@@ -88,7 +97,7 @@ EOF
 }
 
 install_cron() {
-    read -r -p "是否安装 cron 定时任务（每分钟执行）? [Y/n] " ans
+    read -r -p "是否安装正式检测 cron（每分钟执行，单次 --dry-run 不改变它）? [Y/n] " ans
     case "${ans:-Y}" in
         [Yy]*)
             (crontab -l 2>/dev/null | grep -v "swiftban run"; echo "* * * * * ${SWIFTBAN_BIN} run >> ${SWIFTBAN_HOME}/state/cron.log 2>&1") | crontab -

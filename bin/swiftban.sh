@@ -13,6 +13,8 @@ SWIFTBAN_VERSION="1.0.2"
 # 配置文件路径（可通过环境变量覆盖）
 SWIFTBAN_CONF="${SWIFTBAN_CONF:-/etc/swiftban/swiftban.conf}"
 SWIFTBAN_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib"
+export SWIFTBAN_ENTRY
+SWIFTBAN_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 #---------------- 加载配置 ----------------
 load_config() {
@@ -68,14 +70,14 @@ load_config() {
 load_libs() {
     local lib path
     # 先核对全部模块，避免部分加载后继续调用不存在的函数。
-    for lib in logger firewall whitelist detector; do
+    for lib in logger firewall whitelist runtime detector; do
         path="${SWIFTBAN_LIB_DIR}/${lib}.sh"
         if [[ ! -r "$path" ]]; then
             echo "错误: 无法读取模块 ${path}，请从同一版本源码重新运行安装脚本" >&2
             return 1
         fi
     done
-    for lib in logger firewall whitelist detector; do
+    for lib in logger firewall whitelist runtime detector; do
         # shellcheck disable=SC1090
         if ! source "${SWIFTBAN_LIB_DIR}/${lib}.sh"; then
             echo "错误: 加载模块 ${SWIFTBAN_LIB_DIR}/${lib}.sh 失败" >&2
@@ -86,28 +88,38 @@ load_libs() {
 
 #---------------- 命令 ----------------
 cmd_run() {
-    local dry="0"
-    [[ "${1:-}" == "--dry-run" ]] && dry="1"
-    det_run "$dry"
+    local mode=formal
+    if (( $# > 1 )); then echo "用法: swiftban run [--dry-run]" >&2; return 1; fi
+    case "${1:-}" in
+        "") ;;
+        --dry-run) mode=dry-run ;;
+        *) echo "用法: swiftban run [--dry-run]" >&2; return 1 ;;
+    esac
+    rt_execute "$mode" run
 }
 
 cmd_status() {
-    local cnt
-    cnt=$(fw_count)
     echo "=== SwiftBan v${SWIFTBAN_VERSION} 状态 ==="
     echo "配置:     ${SWIFTBAN_CONF}"
     echo "日志目录: ${LOG_DIR}"
     echo "状态目录: ${STATE_DIR}"
     echo "窗口:     ${WINDOW}s | 封禁时长: ${BAN_TTL}s"
     echo "封禁链:   ${FIREWALL_CHAIN}"
-    echo "封禁数:   IPv4=${cnt%:*} IPv6=${cnt#*:}"
+    rt_show_status
+    rt_show_schedule
     echo
     echo "=== 最近操作 ==="
-    tail -5 "${BANLOG}" 2>/dev/null || echo "(无)"
+    tail -5 "${BANLOG}" 2>/dev/null || echo "(无可读操作日志)"
 }
 
 cmd_list() {
-    echo "=== 封禁列表 (banlist.txt) ==="
+    if [[ "${1:-}" == --dry-run && $# == 1 ]]; then rt_list_dry; return; fi
+    if (( $# > 0 )); then echo "用法: swiftban list [--dry-run]" >&2; return 1; fi
+    if [[ -e "$STATE_DIR/stopped.tsv" ]]; then
+        echo "=== 保存的封禁记录（检测已停止；规则可能待恢复，实际状态见 status）==="
+    else
+        echo "=== 封禁列表 (banlist.txt) ==="
+    fi
     if [[ -f "${BANLIST}" ]]; then
         printf "%-18s %-10s %-8s %s\n" "IP" "时间" "TTL" "原因"
         while IFS='|' read -r ip ts ttl reason; do
@@ -120,8 +132,23 @@ cmd_list() {
 }
 
 cmd_ban() {
-    local ip="${1:-}"
+    local ip="${1:-}" part
+    local -a octets
     [[ -z "$ip" ]] && { echo "用法: swiftban ban <IP>"; exit 1; }
+    if [[ ! "$ip" =~ ^[0-9a-fA-F:.]+$ ]]; then
+        echo "错误: ban 只接受单个 IP，不支持主机名或 CIDR" >&2
+        return 1
+    fi
+    if [[ "$ip" != *:* ]]; then
+        [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { echo "错误: 无效的 IPv4 地址" >&2; return 1; }
+        IFS=. read -r -a octets <<< "$ip"
+        for part in "${octets[@]}"; do
+            if (( 10#$part > 255 )) || [[ "$part" == 0?* ]]; then
+                echo "错误: 无效的 IPv4 地址" >&2
+                return 1
+            fi
+        done
+    fi
     # shellcheck disable=SC2034  # NOW 供 detector.sh 模块读取
     NOW=$(date +%s)
     det_ban "$ip" "手动封禁"
@@ -130,12 +157,13 @@ cmd_ban() {
 cmd_unban() {
     local ip="${1:-}"
     [[ -z "$ip" ]] && { echo "用法: swiftban unban <IP>"; exit 1; }
-    fw_unban "$ip"
+    fw_unban "$ip" || return 1
     if [[ -f "${BANLIST}" ]]; then
         # 按 IP 字段固定匹配删除，避免 sed 正则注入
         local tmp
-        tmp=$(mktemp)
-        awk -v ip="$ip" -F'|' '$1 != ip' "${BANLIST}" > "$tmp" && mv "$tmp" "${BANLIST}"
+        tmp=$(mktemp "$STATE_DIR/.unban.XXXXXX") || return 1
+        if awk -v ip="$ip" -F'|' '$1 != ip' "${BANLIST}" > "$tmp" && mv "$tmp" "${BANLIST}"; then :
+        else rm -f "$tmp"; return 1; fi
     fi
     log_action "UNBAN(manual) $ip"
     echo "已解封: $ip"
@@ -188,9 +216,12 @@ SwiftBan v${SWIFTBAN_VERSION} - Nginx 攻击检测与自动封禁
 
 命令:
   run                  执行一次检测（cron 调用）
-  run --dry-run        演练模式（只检测不封禁）
-  status               查看运行状态
-  list                 列出封禁 IP
+  run --dry-run        演练模式（独立保存候选，不封禁）
+  start                恢复未过期封禁并立即执行正式检测
+  stop                 停止当前扫描并撤销规则，保留记录和 TTL
+  status               查看当前执行、最近模式与定时任务
+  list                 列出保存的封禁记录
+  list --dry-run       查看最近一次完整演练候选
   ban <IP>             手动封禁
   unban <IP>           手动解封
   whitelist add <IP>   添加白名单（支持 CIDR）
@@ -208,31 +239,33 @@ EOF
 main() {
     local cmd="${1:-help}"
     shift || true
-
-    # run 命令需要单实例锁：cron 与手动执行并发时避免重复封禁/状态竞态
-    if [[ "$cmd" == "run" ]]; then
-        load_config
-        mkdir -p "${STATE_DIR}"
-        local lockfd
-        exec {lockfd}>"${STATE_DIR}/.lock" || true
-        if ! flock -n "$lockfd"; then
-            echo "已有 swiftban run 实例在执行，跳过本次" >&2
-            exit 0
-        fi
-    fi
-
     case "$cmd" in
-        run)            load_libs || return 1; cmd_run "$@" ;;
-        status)         load_config; load_libs || return 1; cmd_status ;;
-        list|ls)        load_config; load_libs || return 1; cmd_list ;;
-        ban)            load_config; load_libs || return 1; cmd_ban "$@" ;;
-        unban)          load_config; load_libs || return 1; cmd_unban "$@" ;;
-        whitelist|wl)   load_config; load_libs || return 1; cmd_whitelist "$@" ;;
-        install-cron)   load_config; cmd_install_cron ;;
-        configtest)     load_config; cmd_configtest ;;
-        version|-v|--version) echo "SwiftBan v${SWIFTBAN_VERSION}" ;;
-        help|-h|--help|*) usage ;;
+        version|-v|--version) echo "SwiftBan v${SWIFTBAN_VERSION}"; return ;;
+        help|-h|--help) usage; return ;;
+        run|start|stop|status|list|ls|ban|unban|whitelist|wl|install-cron|configtest|__worker) ;;
+        *) usage; return 1 ;;
+    esac
+    load_config
+    load_libs || return 1
+    case "$cmd" in
+        run) cmd_run "$@" ;;
+        start) (( $# == 0 )) || return 1; rt_execute formal start ;;
+        stop) (( $# == 0 )) || return 1; rt_stop ;;
+        status) cmd_status ;;
+        list|ls) cmd_list "$@" ;;
+        ban) rt_mutate ban cmd_ban "$@" ;;
+        unban) rt_mutate unban cmd_unban "$@" ;;
+        whitelist|wl)
+            case "${1:-list}" in
+                list) cmd_whitelist "$@" ;;
+                *) rt_mutate whitelist cmd_whitelist "$@" ;;
+            esac ;;
+        install-cron) cmd_install_cron ;;
+        configtest) cmd_configtest ;;
+        __worker) (( $# == 3 )) || return 1; rt_worker "$@" ;;
     esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

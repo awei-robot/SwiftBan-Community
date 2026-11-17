@@ -46,7 +46,7 @@ cd SwiftBan-Community
 sudo ./install/install.sh
 ```
 
-依赖：Linux + root + iptables + gawk（awk 需支持 mktime 及区间正则）。安装脚本自带依赖检查。
+依赖：Linux（/proc）+ Bash 4.1+ + root + iptables + gawk（awk 需支持 mktime 及区间正则），以及 util-linux 的 flock、setsid。安装脚本自带依赖检查。
 
 `iptables` 必须存在；`ip6tables` 可选，缺失时提示 IPv6 封禁不可用，IPv4 功能正常。未成功执行的 IPv6 封禁不会写入封禁状态。
 
@@ -65,8 +65,11 @@ WHITELIST=127.0.0.1,::1,192.168.224.1   # 白名单
 
 ```bash
 swiftban run --dry-run     # 演练模式：只检测不封禁（建议先跑 1-2 天观察）
+swiftban list --dry-run    # 查看最近一次完整演练候选，独立于真实封禁列表
 swiftban run               # 正式检测（cron 每分钟自动执行）
-swiftban status            # 查看运行状态
+swiftban stop              # 终止当前扫描、撤销管理的规则，保留banlist和TTL
+swiftban start             # 恢复未过期封禁并立即正式扫描
+swiftban status            # 分别查看当前执行、最近模式和定时任务配置
 swiftban list              # 列出封禁 IP
 swiftban ban 1.2.3.4       # 手动封禁
 swiftban unban 1.2.3.4     # 手动解封
@@ -78,6 +81,12 @@ swiftban whitelist add 10.0.0.0/8   # 白名单管理
 ```bash
 swiftban install-cron      # 安装每分钟执行 cron（或使用 systemd timer，见 deploy/）
 ```
+
+`--dry-run` 只影响本次执行，不会改变 cron/systemd 的模式。上面的默认 cron 是正式检测；如需连续演练，应将任务明确配置为 `swiftban run --dry-run`，再检查 `status` 显示的原始命令。
+
+`stop` 保留定时任务，但通过持久停止标记跳过后续正式检测，服务器重启后也不会自动解除停止。停止期间 TTL 继续计时；`start` 仅恢复未到期、非白名单记录，永久封禁照常恢复。停止时仍允许显式演练和手动解封，禁止手动新增封禁。撤销失败时会明确显示“停止未完成”，修复问题后重试 `stop`，不能直接 `start`。
+
+演练候选原子保存为 `${STATE_DIR}/dry-run.tsv`，不进入 `banlist.txt`；失败或中断保留上一次完整结果，成功的零候选结果也会更新文件。`status` 分别报告“控制状态”“当前执行”“最近执行”“定时配置”，最近一次演练不代表已配置的正式任务也处于演练模式。
 
 ## 📊 版本对比
 
@@ -120,10 +129,13 @@ banlist.txt 持久化 / TTL 自动解封 / 规则自动恢复
 
 ```bash
 bash tests/test_detector.sh     # 白名单、格式/时区、字段边界、轮转、决策和故障回归
-shellcheck bin/swiftban.sh lib/*.sh tests/test_detector.sh install/install.sh
+shellcheck bin/swiftban.sh lib/*.sh tests/test*.sh install/install.sh
+bash tests/test_runtime.sh      # Linux真实进程会话/锁测试，防火墙与调度使用替身
 ```
 
 macOS 测试会优先使用 gawk；awk 缺少 mktime 或区间正则支持时测试失败，不会跳过时间解析检查。测试中的防火墙操作均使用 mock。
+
+运行管理集成测试需要 Linux，macOS 只运行可移植回归及静态检查。Python 3 仅用于测试防火墙替身，不是程序运行时依赖。
 
 ## 📈 Linux 日志解析基准（v1.0.2）
 
