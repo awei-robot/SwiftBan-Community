@@ -51,8 +51,8 @@ det_restore() {
             continue
         fi
         wl_is_whitelisted "$ip" && continue
-        if [[ "$ip" == *:* ]] && ! command -v ip6tables >/dev/null 2>&1; then
-            log_warn "缺少 ip6tables，保留 IPv6 记录并跳过恢复: $ip"
+        if [[ "$ip" == *:* ]] && ! fw_ipv6_chain_available; then
+            log_warn "IPv6 工具或防火墙链不可用，保留 IPv6 记录并跳过恢复: $ip"
             continue
         fi
         if ! fw_is_banned "$ip"; then
@@ -83,7 +83,7 @@ det_unban_expired() {
         keep=1
         if [[ "$ttl" != "0" ]] && (( NOW - ts >= ttl )); then
             if [[ "$ip" == *:* ]] && ! command -v ip6tables >/dev/null 2>&1; then
-                log_warn "IPv6 过期规则无法确认撤销，保留过期记录等待核验: $ip" || true
+                log_warn "缺少 ip6tables，保留过期 IPv6 记录等待核验: $ip" || true
             elif fw_unban "$ip"; then
                 keep=0
                 log_action "UNBAN(expired) $ip | $reason"
@@ -460,8 +460,8 @@ det_decide() {
                         printf '%s\t%s\t%s\t%s\t%s\n' "$ip" "$reason" "$count" "$threshold" "$rest" >> "$candidates" || return 1
                     fi
                 else
-                    if [[ "$ip" == *:* ]] && ! command -v ip6tables >/dev/null 2>&1; then
-                        log_warn "缺少 ip6tables，跳过 IPv6 自动封禁并继续处理 IPv4: $ip" || true
+                    if [[ "$ip" == *:* ]] && ! fw_ipv6_chain_available; then
+                        log_warn "IPv6 工具或防火墙链不可用，跳过 IPv6 自动封禁并继续处理 IPv4: $ip" || true
                         continue
                     fi
                     det_ban "$ip" "${reason} ${count}次" || return 1

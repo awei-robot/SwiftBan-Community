@@ -134,6 +134,16 @@ check "允许永久TTL" eq "$?" 0
     done
 )
 check "配置正常且无可选IPv6时通过，目录、链、白名单异常时失败" eq "$?" 0
+ : > "$WHITELIST_FILE"
+(
+    iptables() { return 0; }
+    ip6tables() { [[ "$1" != -L ]]; }
+    command() { builtin command "$@"; }
+    if ! cmd_configtest > "$T/ipv6-chain-configtest"; then cat "$T/ipv6-chain-configtest"; exit 1; fi
+    grep -q 'IPv6 防火墙链: DOCKER-USER ⚠' "$T/ipv6-chain-configtest" || exit 1
+    ! grep -q '✗' "$T/ipv6-chain-configtest"
+)
+check "ip6tables存在但DOCKER-USER缺失时配置检查告警且不失败" eq "$?" 0
 : > "$WHITELIST_FILE"
 
 echo "=== CLI cron ==="

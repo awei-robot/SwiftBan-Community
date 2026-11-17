@@ -65,7 +65,9 @@ FIREWALL_CHAIN="DOCKER-USER" # 防火墙链
 | Docker 端口映射（NPM 等） | `DOCKER-USER`（默认，必须） |
 | 裸机 Nginx | `INPUT` |
 
-`iptables` 是必需依赖，缺失时安装终止。`ip6tables` 为可选依赖，缺失时不阻止安装；自动检测告警并跳过 IPv6 封禁，继续处理 IPv4，手动 IPv6 封禁返回失败，均不写入未成功封禁的 IPv6 状态。安装了 ip6tables 仍需确保对应 IPv6 防火墙链可用，执行失败会中止本轮新增封禁。`status` 无法确认已有 IPv6 规则时显示未知。
+`iptables` 是必需依赖，缺失时安装终止。`ip6tables` 和 IPv6 对应防火墙链均为可选；命令未安装，或配置链（如 Docker 未启用 IPv6 时缺少 `DOCKER-USER`）不可用时，安装和配置检查只提示并忽略 IPv6，IPv4 继续运行。自动检测跳过 IPv6 封禁并保留其状态记录；手动 IPv6 封禁仍返回失败，不会写入未成功封禁的状态。链缺失不会中断 IPv4 新增封禁。`doctor` 会报告 IPv6 降级警告。
+
+安装程序会显示当前 `LOG_DIR` 和 `FIREWALL_CHAIN`，允许直接回车保留，或输入新值并写入 `/etc/swiftban/swiftban.conf`。Docker 端口映射一般选 `DOCKER-USER`，裸机 Nginx 一般选 `INPUT`；确认后会执行配置检查，检查通过才继续安装定时任务。
 
 ## 五、白名单
 

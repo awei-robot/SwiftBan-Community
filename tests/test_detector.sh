@@ -442,13 +442,14 @@ if (
     check_root() { return 0; }
     check_deps() { return 0; }
     install_files() { return 0; }
+    configure_runtime_settings() { echo configure >> "$T/install-order"; }
     verify() { echo verify >> "$T/install-order"; return 1; }
     install_cron() { echo cron >> "$T/install-order"; }
     main
 ) > "$T/install-order.output" 2>&1; then
     fail "安装验证失败必须停止安装流程"
 else
-    eq "$(cat "$T/install-order")" verify "安装验证失败不创建cron，也不报告完成"
+    eq "$(cat "$T/install-order")" $'configure\nverify' "安装配置确认后验证失败不创建cron，也不报告完成"
 fi
 # shellcheck disable=SC2329 # 强制 sed 失败，检查路径改写错误能否向外传递。
 if (
@@ -662,12 +663,22 @@ if (
     grep -q '^198.51.100.11|' "$STATE_DIR/banlist.txt" || exit 1
     [[ ! -e "$STATE_DIR/ipv6.calls" ]] || exit 1
     # 工具存在但执行失败时，仍中断，而非静默吞掉真实故障。
+    ip6tables() { if [[ "$1" == -L ]]; then return 0; else echo unexpected >> "$STATE_DIR/ipv6.calls"; return 2; fi; }
     command() { builtin command "$@"; }
     if det_decide "$wd"; then exit 1; fi
     [[ -s "$STATE_DIR/ipv6.calls" ]] || exit 1
     [[ "$(rows "$STATE_DIR/banlist.txt")" == 2 ]] || exit 1
+    # ip6tables 命令存在但配置链不存在时，视作可选 IPv6 不可用并继续 IPv4。
+    : > "$STATE_DIR/ipv6.calls"
+    : > "$STATE_DIR/banlist.txt"
+    fw_is_banned() { return 1; }
+    ip6tables() { if [[ "$1" == -L ]]; then return 1; else echo called >> "$STATE_DIR/ipv6.calls"; return 2; fi; }
+    command() { builtin command "$@"; }
+    det_decide "$wd" || exit 1
+    [[ "$(rows "$STATE_DIR/banlist.txt")" == 2 ]] || exit 1
+    [[ ! -s "$STATE_DIR/ipv6.calls" ]] || exit 1
 ) > "$T/mixed-family.output" 2>&1; then
-    ok "缺少ip6tables不阻断同规则及后续规则IPv4封禁，真实IPv6错误仍返回失败"
+    ok "缺少ip6tables或IPv6链不阻断IPv4封禁，真实IPv6执行错误仍返回失败"
 else
     cat "$T/mixed-family.output"
     fail "IPv4/IPv6混合决策降级"

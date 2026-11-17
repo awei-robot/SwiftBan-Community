@@ -50,6 +50,8 @@ sudo ./install/install.sh
 
 `iptables` 必须存在；`ip6tables` 可选，缺失时提示 IPv6 封禁不可用，IPv4 功能正常。未成功执行的 IPv6 封禁不会写入封禁状态。
 
+安装时会显示当前日志目录和防火墙链，请按部署环境确认或输入新值；直接回车保留现有值。Docker 端口映射通常使用 `DOCKER-USER`，裸机 Nginx 通常使用 `INPUT`。确认后安装程序会运行配置检查。
+
 ### 配置
 
 编辑 `/etc/swiftban/swiftban.conf`：

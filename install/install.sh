@@ -62,7 +62,7 @@ check_deps() {
 install_files() {
     info "安装到 ${SWIFTBAN_HOME} ..."
 
-    mkdir -p "${SWIFTBAN_HOME}"/{bin,lib,config,state} "${SWIFTBAN_LIB}" || return 1
+    mkdir -p "${SWIFTBAN_HOME}/state" "${SWIFTBAN_LIB}" || return 1
 
     # 主程序
     install -m 755 "${SCRIPT_DIR}/bin/swiftban.sh" "${SWIFTBAN_BIN}" || return 1
@@ -94,6 +94,54 @@ EOF
     fi
 
     info "文件安装完成"
+}
+
+# 安装前确认最容易因部署环境不同而需要调整的两项配置。
+configure_runtime_settings() {
+    local conf="$SWIFTBAN_HOME/swiftban.conf" current_log current_chain
+    local answer new_log new_chain quoted_log quoted_chain tmp changed=0
+    # shellcheck disable=SC1090
+    source "$conf" || return 1
+    current_log="${LOG_DIR:-/root/proxy-manager/data/logs}"
+    current_chain="${FIREWALL_CHAIN:-DOCKER-USER}"
+
+    echo
+    echo "请确认 SwiftBan 的运行环境配置；直接回车保留当前值。"
+    if read -r -p "Nginx/NPM 日志目录 [${current_log}]: " answer; then :; else answer=""; fi
+    new_log="${answer:-$current_log}"
+    while :; do
+        if read -r -p "IPv4/IPv6 防火墙链 [${current_chain}]（Docker 通常 DOCKER-USER，裸机通常 INPUT）: " answer; then :; else answer=""; fi
+        new_chain="${answer:-$current_chain}"
+        if [[ "$new_chain" =~ ^[[:alnum:]_.:-]{1,29}$ ]]; then break; fi
+        warn "链名只允许 1–29 位字母、数字、下划线、点、冒号或连字符。"
+    done
+
+    [[ "$new_log" == "$current_log" ]] || changed=1
+    [[ "$new_chain" == "$current_chain" ]] || changed=1
+    if (( ! changed )); then
+        info "保留日志目录和防火墙链配置"
+        return 0
+    fi
+
+    tmp=$(mktemp "${conf}.XXXXXX") || return 1
+    if ! cat "$conf" > "$tmp"; then rm -f "$tmp"; return 1; fi
+    {
+        printf '\n# 安装时确认的运行环境配置\n'
+        if [[ "$new_log" != "$current_log" ]]; then
+            printf -v quoted_log '%q' "$new_log"
+            printf 'LOG_DIR=%s\n' "$quoted_log"
+        fi
+        if [[ "$new_chain" != "$current_chain" ]]; then
+            printf -v quoted_chain '%q' "$new_chain"
+            printf 'FIREWALL_CHAIN=%s\n' "$quoted_chain"
+        fi
+    } >> "$tmp" || { rm -f "$tmp"; return 1; }
+    chmod --reference="$conf" "$tmp" && mv -f "$tmp" "$conf" || {
+        rm -f "$tmp"
+        error "保存日志目录和防火墙链配置失败"
+        return 1
+    }
+    info "已保存日志目录和防火墙链配置"
 }
 
 install_cron() {
@@ -137,6 +185,7 @@ main() {
     check_root
     check_deps
     install_files || return 1
+    configure_runtime_settings || return 1
     verify || return 1
     install_cron
     echo

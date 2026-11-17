@@ -598,11 +598,13 @@ rt_doctor() {
         else printf '失败 无法读取 IPv4 管理规则清单\n  修复: 检查 root 权限、iptables -S 和链配置\n'; failures=$((failures+1)); fi
     else printf '失败 IPv4 防火墙链不可用: %s\n  修复: 确认链已创建；裸机 Nginx 通常设置 FIREWALL_CHAIN="INPUT"\n' "$FIREWALL_CHAIN"; failures=$((failures+1)); fi
     if command -v ip6tables >/dev/null 2>&1; then
-        if ip6tables -L "$FIREWALL_CHAIN" -n >/dev/null 2>&1 && fw_inventory ip6tables >/dev/null; then
-            v6_rules=$(fw_inventory ip6tables | awk 'END {print NR+0}')
-            printf '通过 IPv6 防火墙链可用: %s（管理规则 %s）\n' "$FIREWALL_CHAIN" "$v6_rules"
-        else printf '失败 IPv6 防火墙链不可用或规则无法读取: %s\n  修复: 检查 ip6tables 和对应链；仅需 IPv4 时可卸载可选 ip6tables\n' "$FIREWALL_CHAIN"; failures=$((failures+1)); fi
-    elif fw_needs_ipv6; then printf '失败 banlist 含 IPv6 记录但 ip6tables 缺失，规则撤销情况未知\n  修复: 安装 ip6tables，确认 IPv6 规则后运行 sudo swiftban stop\n'; failures=$((failures+1)); fi
+        if fw_ipv6_chain_available; then
+            if fw_inventory ip6tables >/dev/null; then
+                v6_rules=$(fw_inventory ip6tables | awk 'END {print NR+0}')
+                printf '通过 IPv6 防火墙链可用: %s（管理规则 %s）\n' "$FIREWALL_CHAIN" "$v6_rules"
+            else printf '警告 无法读取 IPv6 管理规则，IPv6 操作将跳过\n'; warnings=$((warnings+1)); fi
+        else printf '警告 IPv6 防火墙链不可用或权限不足，IPv6 操作将跳过；IPv4 不受影响\n'; warnings=$((warnings+1)); fi
+    elif fw_needs_ipv6; then printf '警告 banlist 含 IPv6 记录但 ip6tables 缺失，保留记录并跳过 IPv6；如需管理 IPv6 规则请安装 ip6tables\n'; warnings=$((warnings+1)); fi
 
     if [[ -e "$STATE_DIR/stopped.tsv" ]]; then
         IFS=$'\t' read -r state _ < "$STATE_DIR/stopped.tsv" || state=invalid

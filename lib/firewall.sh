@@ -7,6 +7,12 @@
 # 判断是否 IPv6
 is_ipv6() { [[ "$1" == *:* ]]; }
 
+# IPv6 属于可选能力；命令存在但配置链不可查询时按 IPv6 不可用处理。
+fw_ipv6_chain_available() {
+    command -v ip6tables >/dev/null 2>&1 &&
+        ip6tables -L "$FIREWALL_CHAIN" -n >/dev/null 2>&1
+}
+
 # 封禁 IP（失败返回非零并记录错误，不静默吞掉）
 fw_ban() {
     local ip="$1" err

@@ -187,8 +187,10 @@ cmd_configtest() {
     else echo "防火墙链: $FIREWALL_CHAIN ✗ iptables 缺失、链不可用或权限不足"; failed=1; fi
     if command -v ip6tables >/dev/null 2>&1; then
         echo "IPv6 工具: ip6tables 已安装"
-        if ! ip6tables -L "$FIREWALL_CHAIN" -n >/dev/null 2>&1; then
-            echo "IPv6 防火墙链: $FIREWALL_CHAIN ✗ 不可用或权限不足"; failed=1
+        if fw_ipv6_chain_available; then
+            echo "IPv6 防火墙链: $FIREWALL_CHAIN ✓"
+        else
+            echo "IPv6 防火墙链: $FIREWALL_CHAIN ⚠ 不可用或权限不足，将忽略 IPv6；IPv4 不受影响"
         fi
     else echo "IPv6 工具: 未安装 ip6tables（可选，IPv4 功能不受影响）"; fi
     if [[ -r "$WHITELIST_FILE" && -f "$WHITELIST_FILE" ]]; then echo "白名单文件: $WHITELIST_FILE ✓"
