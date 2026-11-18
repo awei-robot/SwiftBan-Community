@@ -157,10 +157,31 @@ cmd_unban() {
     echo "已解封: $ip"
 }
 
+cmd_whitelist_reconcile() (
+    local ip ts ttl reason tmp failed=0
+    [[ -f "$BANLIST" ]] || return 0
+    tmp=$(mktemp "$STATE_DIR/.whitelist-unban.XXXXXX") || return 1
+    trap 'rm -f "$tmp"' EXIT
+    while IFS='|' read -r ip ts ttl reason || [[ -n "$ip" ]]; do
+        [[ -n "$ip" ]] || continue
+        if wl_is_whitelisted "$ip"; then
+            if fw_unban "$ip"; then
+                log_action "UNBAN(whitelist) $ip"
+                continue
+            fi
+            log_error "白名单已保存，但解封失败，保留封禁记录；请重试 whitelist add: $ip"
+            failed=1
+        fi
+        printf '%s|%s|%s|%s\n' "$ip" "$ts" "$ttl" "$reason" >> "$tmp" || return 1
+    done < "$BANLIST"
+    mv -f "$tmp" "$BANLIST" || return 1
+    (( failed == 0 ))
+)
+
 cmd_whitelist() {
     local action="${1:-list}"
     case "$action" in
-        add)    wl_add "${2:-}" ;;
+        add)    wl_add "${2:-}" && cmd_whitelist_reconcile ;;
         remove) wl_remove "${2:-}" ;;
         list)   wl_list ;;
         *)      echo "用法: swiftban whitelist {add|remove|list} [IP/CIDR]"; exit 1 ;;

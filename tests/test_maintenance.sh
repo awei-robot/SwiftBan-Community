@@ -193,5 +193,21 @@ EOF
     [[ ! -e "$T/cron-should-not-call" ]]
 )
 check "CLI保留配置与其他任务、重复安装幂等、安全执行特殊路径并传播失败" eq "$?" 0
+(
+    WHITELIST=""
+    : > "$WHITELIST_FILE"
+    printf '119.57.94.54|1|0|test\n198.51.100.2|1|0|keep\n' > "$BANLIST"
+    fw_unban() { return 1; }
+    if cmd_whitelist add 119.57.94.54 >/dev/null 2>&1; then exit 1; fi
+    wl_is_whitelisted 119.57.94.54 || exit 1
+    [[ $(wc -l < "$BANLIST") -eq 2 ]] || exit 1
+    fw_unban() { return 0; }
+    cmd_whitelist add 119.57.94.54 >/dev/null || exit 1
+    [[ $(wc -l < "$BANLIST") -eq 1 ]] || exit 1
+    grep -q '^198.51.100.2|' "$BANLIST" || exit 1
+    cmd_whitelist add 198.51.100.99/24 >/dev/null || exit 1
+    [[ ! -s "$BANLIST" ]] || exit 1
+)
+check "白名单添加撤销已有封禁，失败保留记录，重复添加重试，CIDR覆盖解封" eq "$?" 0
 echo "=== 维护回归结果: $PASS 通过, $FAIL 失败 ==="
 [[ "$FAIL" == 0 ]]

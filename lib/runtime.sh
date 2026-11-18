@@ -354,7 +354,10 @@ rt_mutate() (
         return 1
     fi
     exec 8> "$STATE_DIR/.lock" || return 1
-    flock -n 8 || { log_error "扫描正在执行，请稍后重试状态修改"; return 1; }
+    if ! flock -n 8; then
+        log_info "扫描正在执行，等待完成后修改状态（最多 60 秒）"
+        flock -w 60 8 || { log_error "等待扫描结束超时，请稍后重试状态修改"; return 1; }
+    fi
     "$@"
 )
 
