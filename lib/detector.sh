@@ -116,8 +116,9 @@ det_check_config() {
         auto|npm_standard|npm_proxy|combined) ;;
         *) log_error "不支持的 LOG_FORMAT: $LOG_FORMAT"; return 1 ;;
     esac
-    for name in WINDOW BAN_TTL LIMIT_444 LIMIT_SCAN LIMIT_EVILPATH LIMIT_PAYLOAD LIMIT_UA LIMIT_AUTH LIMIT_API LIMIT_API_RATE LIMIT_EMPTYUA LIMIT_HIGHFREQ; do
-        value="${!name}"
+    for name in WINDOW BAN_TTL LIMIT_444 LIMIT_SCAN LIMIT_EVILPATH LIMIT_PAYLOAD LIMIT_UA LIMIT_AUTH LIMIT_API LIMIT_API_RATE LIMIT_EMPTYUA LIMIT_HIGHFREQ WATCH_RETENTION_DAYS; do
+        if [[ "$name" == WATCH_RETENTION_DAYS ]]; then value="${WATCH_RETENTION_DAYS:-7}"
+        else value="${!name}"; fi
         if [[ "$name" == BAN_TTL && "$value" == 0 ]]; then continue; fi
         if [[ ! "$value" =~ ^[1-9][0-9]*$ ]] || (( ${#value} > 10 )); then
             log_error "$name 必须为 1–2147483647 的整数（BAN_TTL 允许 0 表示永久）"
@@ -354,6 +355,8 @@ det_run() (
         log_error "日志统计失败，本轮停止新增封禁"
         return 1
     fi
+    local WATCH_PENDING="$workdir/watch.tsv"
+    : > "$WATCH_PENDING" || return 1
     det_phase deciding || return 1
     if [[ "$dry_run" == "1" ]]; then
         mkdir -p "$STATE_DIR" || return 1
@@ -385,6 +388,10 @@ det_run() (
     else
         if declare -F rt_may_enforce >/dev/null; then rt_may_enforce || return 1; fi
         det_decide "$workdir" || return 1
+    fi
+    if ! watch_publish "$( [[ "$dry_run" == 1 ]] && echo dry-run || echo formal )" "$WATCH_PENDING"; then
+        log_error "WATCH 保存失败，本轮观察结果未完整保存"
+        return 1
     fi
     lines=$(wc -l < "$workdir/recent.log")
     cnt=$(fw_count)
@@ -484,6 +491,7 @@ det_decide() {
         if (( count >= LIMIT_API )); then
             ip="${rest%% *}"; endpoint="${rest#* }"
             if ! wl_is_whitelisted "$ip" && ! fw_is_banned "$ip"; then
+                watch_record "$ip" api "$count" "$LIMIT_API" "$WINDOW" "$endpoint" || return 1
                 log_warn "WATCH 单接口高频 $ip | ${count}次/${WINDOW}s | $endpoint" || true
             fi
         fi
@@ -496,6 +504,7 @@ det_decide() {
             ip="${rest#*|}"; ip="${ip%%|*}"
             endpoint="${rest#*|*|}"
             if ! wl_is_whitelisted "$ip" && ! fw_is_banned "$ip"; then
+                watch_record "$ip" apirate "$count" "$LIMIT_API_RATE" 60 "$endpoint" || return 1
                 log_warn "WATCH 单IP单接口速率 $ip | ${count}次/分钟 | $endpoint" || true
             fi
         fi
@@ -505,6 +514,7 @@ det_decide() {
     while read -r count ip; do
         if (( count >= LIMIT_HIGHFREQ )); then
             if ! fw_is_banned "$ip" && ! wl_is_whitelisted "$ip"; then
+                watch_record "$ip" freq "$count" "$LIMIT_HIGHFREQ" "$WINDOW" "-" || return 1
                 log_info "WATCH 高频 $ip ${count}次/${WINDOW}s" || true
             fi
         fi

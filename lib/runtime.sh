@@ -477,6 +477,7 @@ rt_show_status() {
         echo "最近执行: $(rt_mode_text "$mode") | 开始=$(rt_time_text "$started") | 结束=$(rt_time_text "$finished") | 结果=$result | 退出码=$code"
     else echo "最近执行: 无可读记录"; fi
     if [[ -r "$BANLIST" ]]; then records=$(wc -l < "$BANLIST"); fi
+    watch_summary
     echo "保存的封禁记录: $records（停止时待恢复；过期记录在 start 时清理）"
     if cnt=$(fw_managed_count); then echo "实际管理的规则: $cnt"; else echo "实际管理的规则: 无法确认"; fi
     if [[ -r "$STATE_DIR/dry-run.tsv" ]]; then
@@ -580,6 +581,7 @@ rt_doctor() {
     else printf '失败 日志目录不存在或不可读取: %s\n  修复: 检查 LOG_DIR 和运行用户权限\n' "$LOG_DIR"; failures=$((failures+1)); fi
     if [[ -d "$STATE_DIR" && -r "$STATE_DIR" && -w "$STATE_DIR" && -x "$STATE_DIR" ]]; then printf '通过 状态目录可读写: %s\n' "$STATE_DIR"
     else printf '失败 状态目录不存在或不可读写: %s\n  修复: 创建 STATE_DIR 并授权 SwiftBan 运行用户读写\n' "$STATE_DIR"; failures=$((failures+1)); fi
+    watch_doctor || failures=$((failures+1))
     if (( EUID == 0 )); then printf '通过 当前用户为 root\n'
     else printf '警告 当前用户不是 root，防火墙及进程控制检查可能无法完成\n'; warnings=$((warnings+1)); fi
 

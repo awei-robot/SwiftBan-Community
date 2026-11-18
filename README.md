@@ -67,6 +67,8 @@ WHITELIST=127.0.0.1,::1,192.168.224.1   # 白名单
 
 ```bash
 swiftban run --dry-run     # 演练模式：只检测不封禁（建议先跑 1-2 天观察）
+swiftban watch             # 查看近24小时观察记录（仅告警）
+swiftban watch --dry-run   # 查看演练观察记录
 swiftban list --dry-run    # 查看最近演练候选及复核信息
 swiftban run               # 正式检测（cron 每分钟自动执行）
 swiftban stop              # 终止当前扫描、撤销管理的规则，保留banlist和TTL

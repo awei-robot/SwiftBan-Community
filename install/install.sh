@@ -67,7 +67,7 @@ install_files() {
     # 主程序
     install -m 755 "${SCRIPT_DIR}/bin/swiftban.sh" "${SWIFTBAN_BIN}" || return 1
     # 模块
-    for lib in logger firewall whitelist runtime detector; do
+    for lib in logger firewall whitelist runtime watch detector; do
         install -m 644 "${SCRIPT_DIR}/lib/${lib}.sh" "${SWIFTBAN_LIB}/${lib}.sh" || return 1
     done
     # 配置

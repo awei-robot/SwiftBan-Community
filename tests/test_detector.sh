@@ -23,6 +23,8 @@ touch "${WHITELIST_FILE}"
 # shellcheck disable=SC1090,SC1091  # 测试按相对路径动态 source
 source "${LIBS}/logger.sh"
 # shellcheck disable=SC1090,SC1091
+source "${LIBS}/watch.sh"
+# shellcheck disable=SC1090,SC1091
 source "${LIBS}/whitelist.sh"
 
 echo "=== 白名单测试 ==="
@@ -384,6 +386,14 @@ if grep -q '格式错误=1' "$T/run.output"; then ok "完整run报告格式错�
 # shellcheck disable=SC2329
 if (det_detect_all() { return 1; }; det_run 0 > "$T/run.output"); then fail "统计失败中止运行"; else ok "统计失败中止运行"; fi
 eq "$(rows "$T/fw.calls")" 0 "统计程序失败不新增封禁"
+before_watch=$(find "$STATE_DIR/watch" -type f -name '*.tsv' | wc -l)
+# shellcheck disable=SC2329
+if (det_detect_all() { return 1; }; det_run 0 >/dev/null); then fail "失败扫描必须返回失败"; fi
+eq "$(find "$STATE_DIR/watch" -type f -name '*.tsv' | wc -l)" "$before_watch" "失败扫描不发布WATCH结果"
+if [[ -d "$STATE_DIR/watch/formal" && -d "$STATE_DIR/watch/dry-run" ]]; then
+    ok "完整扫描发布正式与演练独立WATCH结果"
+else fail "完整扫描发布正式与演练独立WATCH结果"; fi
+
 
 # 仅在临时目录执行安装文件步骤，不请求 root，不安装 cron。
 # shellcheck disable=SC2329 # 子进程配置检查使用导出的防火墙替身。
@@ -400,7 +410,7 @@ if (
     iptables() { return 0; }
     ip6tables() { return 0; }
     export -f iptables ip6tables
-    for module in logger firewall whitelist runtime detector; do
+    for module in logger firewall whitelist runtime watch detector; do
         test -r "$SWIFTBAN_LIB/$module.sh" || exit 1
     done
     SWIFTBAN_CONF="$SWIFTBAN_HOME/swiftban.conf" "$SWIFTBAN_BIN" configtest > "$T/installed/output" || exit 1

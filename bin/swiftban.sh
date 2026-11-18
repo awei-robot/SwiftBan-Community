@@ -30,6 +30,7 @@ load_config() {
     # 默认值
     LOG_DIR="${LOG_DIR:-/root/proxy-manager/data/logs}"
     LOG_FORMAT="${LOG_FORMAT:-auto}"
+    WATCH_RETENTION_DAYS="${WATCH_RETENTION_DAYS:-7}"
     STATE_DIR="${STATE_DIR:-/etc/swiftban/state}"
     BAN_TTL="${BAN_TTL:-259200}"
     WINDOW="${WINDOW:-7200}"
@@ -70,14 +71,14 @@ load_config() {
 load_libs() {
     local lib path
     # 先核对全部模块，避免部分加载后继续调用不存在的函数。
-    for lib in logger firewall whitelist runtime detector; do
+    for lib in logger firewall whitelist runtime watch detector; do
         path="${SWIFTBAN_LIB_DIR}/${lib}.sh"
         if [[ ! -r "$path" ]]; then
             echo "错误: 无法读取模块 ${path}，请从同一版本源码重新运行安装脚本" >&2
             return 1
         fi
     done
-    for lib in logger firewall whitelist runtime detector; do
+    for lib in logger firewall whitelist runtime watch detector; do
         # shellcheck disable=SC1090
         if ! source "${SWIFTBAN_LIB_DIR}/${lib}.sh"; then
             echo "错误: 加载模块 ${SWIFTBAN_LIB_DIR}/${lib}.sh 失败" >&2
@@ -234,6 +235,7 @@ SwiftBan v${SWIFTBAN_VERSION} - Nginx 攻击检测与自动封禁
   start                恢复未过期封禁并立即执行正式检测
   stop                 停止当前扫描并撤销规则，保留记录和 TTL
   status               查看当前执行、最近模式与定时任务
+  watch                查看观察记录（支持 --ip、--rule、--since、--limit、--dry-run、--json）
   list                 列出保存的封禁记录
   list --dry-run       查看最近一次完整演练候选
   ban <IP>             手动封禁
@@ -257,7 +259,7 @@ main() {
     case "$cmd" in
         version|-v|--version) echo "SwiftBan v${SWIFTBAN_VERSION}"; return ;;
         help|-h|--help) usage; return ;;
-        run|start|stop|status|list|ls|ban|unban|whitelist|wl|install-cron|configtest|doctor|__worker) ;;
+        run|start|stop|status|watch|list|ls|ban|unban|whitelist|wl|install-cron|configtest|doctor|__worker) ;;
         *) usage; return 1 ;;
     esac
     load_config
@@ -267,6 +269,7 @@ main() {
         start) (( $# == 0 )) || return 1; rt_execute formal start ;;
         stop) (( $# == 0 )) || return 1; rt_stop ;;
         status) cmd_status ;;
+        watch) cmd_watch "$@" ;;
         list|ls) cmd_list "$@" ;;
         ban) rt_mutate ban cmd_ban "$@" ;;
         unban) rt_mutate unban cmd_unban "$@" ;;
