@@ -55,8 +55,8 @@ printf '2001:db8::1|100|0|a\n2001:DB8:0:0:0:0:0:1|100|0|b\n2001:db8::2|100|0|kee
 check "手动解封删除所有等价旧记录且保留其他地址" eq "$?" 0
 mkdir "$T/parse"
 printf 's\tf\t2001:db8::1 - - [16/Nov/2026:11:59:00 +0000] "GET / HTTP/1.1" 200 0 "-" "Mozilla"\ns\tf\t2001:DB8:0:0:0:0:0:1 - - [16/Nov/2026:11:59:01 +0000] "GET / HTTP/1.1" 200 0 "-" "Mozilla"\n' > "$T/input"
-export NOW_EPOCH
 NOW_EPOCH=$(TZ=UTC det_awk 'BEGIN {print mktime("2026 11 16 12 00 00")}')
+export NOW_EPOCH
 if det_parse "$T/input" "$T/parse/recent.log" "$T/stats" &&
     det_detect_all "$T/parse" && grep -q "^2 $canonical$" "$T/parse/ip_freq.txt"; then
     ok "不同IPv6写法的日志合并统计"

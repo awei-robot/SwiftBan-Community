@@ -174,10 +174,11 @@ det_collect() {
 }
 
 # 输出 TSV：epoch、IP、最终状态、方法、Host、完整 URI、UA、Referer、来源。
+# 可选第4参数为查询IP：输出 epoch、来源、原始行号、原始行，不做轮转去重。
 # 保留转义文本，不解码 URL 或 \xXX，防止记录/字段分隔符注入。
 det_parse() {
-    local src="$1" dst="$2" stats="$3"
-    LC_ALL=C TZ=UTC SWIFTBAN_STATS="$stats" det_awk \
+    local src="$1" dst="$2" stats="$3" query_ip="${4:-}"
+    LC_ALL=C TZ=UTC SWIFTBAN_STATS="$stats" SWIFTBAN_QUERY_IP="$query_ip" det_awk \
         -v now="$NOW_EPOCH" -v win="$WINDOW" -v fmt="$LOG_FORMAT" "$(ip_awk)"'
     function validip(s) {return ip_canon(s)!=""}
     # 引号内的 [Client ...] 只是字符串，不是结构化字段。
@@ -291,12 +292,18 @@ det_parse() {
         source=substr($0,1,first-1); rest=substr($0,first+1)
         second=index(rest,"\t"); family=substr(rest,1,second-1); raw=substr(rest,second+1)
         sources[source]=1
+        source_line=++source_lines[source]
         if(!first || !second || raw~/[[:cntrl:]]/ || !parse(raw,family)) {
             invalid[source]++; next
         }
         if(epoch>now) {future[source]++; next}
         if(epoch<now-win) {expired[source]++; next}
         valid[source]++
+        # 复核模式保留每条原始记录和行号，不使用轮转去重后的统计输出。
+        if(ENVIRON["SWIFTBAN_QUERY_IP"]!="") {
+            if(ip==ENVIRON["SWIFTBAN_QUERY_IP"]) print epoch,source,source_line,raw
+            next
+        }
         # 同家族跨文件采用最大重数，避免轮转重叠引起重复封禁统计。
         occurrence=++perfile[source SUBSEP raw]
         key=family SUBSEP raw

@@ -114,8 +114,10 @@ cmd_status() {
 }
 
 cmd_list() {
+    if [[ "${1:-}" == --ip ]]; then shift; cmd_list_ip "$@"; return; fi
+    if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then list_ip_usage; return; fi
     if [[ "${1:-}" == --dry-run && $# == 1 ]]; then rt_list_dry; return; fi
-    if (( $# > 0 )); then echo "用法: swiftban list [--dry-run]" >&2; return 1; fi
+    if (( $# > 0 )); then echo "用法: swiftban list [--dry-run | --ip IP [--since 2h] [--limit 100]]" >&2; return 1; fi
     if [[ -e "$STATE_DIR/stopped.tsv" ]]; then
         echo "=== 保存的封禁记录（检测已停止；规则可能待恢复，实际状态见 status）==="
     else
@@ -131,6 +133,74 @@ cmd_list() {
         echo "(空)"
     fi
 }
+
+list_ip_usage() {
+    cat <<'EOF'
+用法: swiftban list
+      swiftban list --dry-run
+      swiftban list --ip <IP> [--since <时长>] [--limit <数量>]
+
+list 列出保存的封禁记录，list --dry-run 查看最近完整演练结果。
+查询该IP的原始访问日志，以解析出的客户端IP精确匹配，支持IPv4/IPv6。
+  --since 2h           最近时长，支持 m（分钟）、h（小时）、d（天）；默认配置 WINDOW
+  --limit 100          最多显示数量，默认100，按访问时间倒序
+输出来源文件、行号及原始行，保留方法、URI、状态码、UA等原文。
+仅读取 LOG_DIR 第一层最近3分钟修改的支持格式日志及未压缩轮转文件；
+不读取压缩文件。不匹配无效/未来记录，不把URI或UA中的IP作为客户端。
+未查到不代表没有历史访问；日志轮转和扫描期间追加可能影响本次查询。
+查询不修改封禁或观察状态，也不等待扫描锁。
+EOF
+}
+
+cmd_list_ip() (
+    local ip="${1:-}" limit=100 since="" amount unit wd total invalid
+    local NOW_EPOCH WINDOW="$WINDOW"
+    [[ -n "$ip" ]] || { list_ip_usage >&2; return 1; }
+    ip=$(wl_normalize_ip "$ip") || { echo "错误: 需要合法的单个 IP" >&2; return 1; }
+    shift
+    while (( $# )); do
+        case "$1" in
+            --since|--limit)
+                (( $# >= 2 )) || { list_ip_usage >&2; return 1; }
+                if [[ "$1" == --since ]]; then since="$2"; else limit="$2"; fi
+                shift 2 ;;
+            *) list_ip_usage >&2; return 1 ;;
+        esac
+    done
+    [[ "$limit" =~ ^[1-9][0-9]{0,5}$ ]] || { echo "错误: limit 必须为 1–999999" >&2; return 1; }
+    if [[ -n "$since" ]]; then
+        [[ "$since" =~ ^([1-9][0-9]{0,4})([mhd])$ ]] || { echo "错误: since 应为 30m、2h 或 7d 等时长" >&2; return 1; }
+        amount="${since%?}"; unit="${since: -1}"
+        case "$unit" in m) WINDOW=$((amount*60));; h) WINDOW=$((amount*3600));; d) WINDOW=$((amount*86400));; esac
+    fi
+    [[ -d "$LOG_DIR" && -r "$LOG_DIR" && -x "$LOG_DIR" ]] || { echo "错误: 日志目录不可读取: $LOG_DIR" >&2; return 1; }
+    case "$LOG_FORMAT" in auto|npm_standard|npm_proxy|combined) ;; *) echo "错误: 不支持的 LOG_FORMAT" >&2; return 1;; esac
+    # shellcheck disable=SC2034 # det_parse 读取查询时点
+    NOW_EPOCH=$(date -u +%s)
+    wd=$(mktemp -d) || return 1
+    trap 'rm -rf "$wd"' EXIT
+    : > "$wd/stats.tsv" || return 1
+    if ! det_collect "$wd" || ! det_parse "$wd/input.tsv" "$wd/raw.tsv" "$wd/stats.tsv" "$ip"; then
+        echo "错误: 日志读取或解析失败，未输出不完整结果" >&2
+        return 1
+    fi
+    LC_ALL=C sort -t $'\t' -k1,1nr -k2,2 -k3,3n "$wd/raw.tsv" > "$wd/sorted.tsv" || return 1
+    total=$(wc -l < "$wd/raw.tsv")
+    invalid=$(awk -F '\t' '{n+=$3} END {print n+0}' "$wd/stats.tsv")
+    echo "=== IP 原始访问记录: $ip ==="
+    echo "范围: 最近 ${WINDOW} 秒；仅读取最近3分钟修改的支持格式文件；LOG_DIR=$LOG_DIR"
+    echo "命中: $((total)) 条，最多显示 $limit 条；候选文件内格式无效记录: $invalid 条"
+    echo "原始记录不做轮转去重；以下内容是访问日志原文，不代表每条都是攻击。"
+    if (( total == 0 )); then echo "(本次查询范围内无匹配记录，不代表没有历史访问)"; fi
+    awk -F '\t' -v limit="$limit" 'NR<=limit {
+        first=index($0,"\t");rest=substr($0,first+1)
+        second=index(rest,"\t");rest=substr(rest,second+1)
+        third=index(rest,"\t");raw=substr(rest,third+1)
+        printf "\n%s:%s\n%s\n",$2,$3,raw
+    }' "$wd/sorted.tsv"
+    echo
+    echo "相关观察: swiftban watch --ip $ip"
+)
 
 cmd_ban() {
     local ip="${1:-}"
@@ -267,6 +337,7 @@ SwiftBan v${SWIFTBAN_VERSION} - Nginx 攻击检测与自动封禁
   status               查看当前执行、最近模式与定时任务
   watch                查看观察记录（支持 --ip、--rule、--since、--limit、--dry-run、--json）
   list                 列出保存的封禁记录
+  list --ip <IP>       查询该IP原始访问日志（--since 2h、--limit 100）
   list --dry-run       查看最近一次完整演练候选
   ban <IP>             手动封禁
   unban <IP>           手动解封
@@ -294,10 +365,13 @@ main() {
     case "$cmd" in
         version|-v|--version) echo "SwiftBan v${SWIFTBAN_VERSION}"; return ;;
         help|-h|--help) usage; return ;;
+        list|ls)
+            if [[ $# == 1 && ( "$1" == --help || "$1" == -h ) ]]; then list_ip_usage; return; fi
+            ;;
         watch)
             if [[ $# == 1 && ( "$1" == --help || "$1" == -h ) ]]; then watch_usage; return; fi
             ;;
-        run|start|stop|status|list|ls|ban|unban|whitelist|wl|install-cron|configtest|doctor|__worker) ;;
+        run|start|stop|status|ban|unban|whitelist|wl|install-cron|configtest|doctor|__worker) ;;
         *) usage; return 1 ;;
     esac
     load_config

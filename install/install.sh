@@ -136,11 +136,11 @@ configure_runtime_settings() {
             printf 'FIREWALL_CHAIN=%s\n' "$quoted_chain"
         fi
     } >> "$tmp" || { rm -f "$tmp"; return 1; }
-    chmod --reference="$conf" "$tmp" && mv -f "$tmp" "$conf" || {
+    if ! chmod --reference="$conf" "$tmp" || ! mv -f "$tmp" "$conf"; then
         rm -f "$tmp"
         error "保存日志目录和防火墙链配置失败"
         return 1
-    }
+    fi
     info "已保存日志目录和防火墙链配置"
 }
 

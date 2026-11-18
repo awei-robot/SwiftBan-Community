@@ -76,12 +76,25 @@ swiftban start             # 恢复未过期封禁并立即正式扫描
 swiftban status            # 分别查看当前执行、最近模式和定时任务配置
 sudo swiftban doctor       # 检查依赖、配置、防火墙、状态和调度并给出修复提示
 swiftban list              # 列出封禁 IP
+swiftban list --ip 114.252.120.44  # 查询该IP原始访问日志
 swiftban ban 1.2.3.4       # 手动封禁
 swiftban unban 1.2.3.4     # 手动解封
 swiftban whitelist add 10.0.0.0/8   # 白名单管理
 swiftban whitelist remove 10.0.0.0/8
 swiftban whitelist list
 ```
+
+### 单 IP 原始访问详情
+
+```bash
+swiftban list --ip 114.252.120.44
+swiftban list --ip 114.252.120.44 --since 30m --limit 200
+swiftban list --help
+```
+
+按解析出的客户端 IP 精确查询 Nginx/NPM **原始访问日志**，显示来源文件、行号及原始行（含请求方法、URI、状态码、UA 等日志原有字段），按访问时间倒序。支持等价 IPv6 写法，不会把 URI、UA 或 Referer 中的 IP 当成访问来源。
+
+默认查询最近 `WINDOW` 秒、最多100条；`--since` 支持 `m`/`h`/`d`，`--limit` 可调整数量。沿用检测文件筛选：仅查询日志目录第一层**最近3分钟修改**的支持格式日志和未压缩轮转文件。因此未查到不代表没有历史访问，增大查询时间不会扩大文件修改时间范围。原始记录不做轮转去重，无效或未来日志不展示。查询只读，不修改封禁和 WATCH，也不等待扫描锁。
 
 ### WATCH 观察列表
 

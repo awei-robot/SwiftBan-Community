@@ -60,3 +60,30 @@ printf 'bad\n' > "$STATE_DIR/watch/formal/broken.pending"
 mv "$STATE_DIR/watch/formal/broken.pending" "$STATE_DIR/watch/formal/.pending.broken.tsv"
 if watch_doctor >/dev/null 2>&1; then exit 1; fi
 echo '通过 非法参数、跨模式过期清理与损坏文件诊断'
+(
+    STATE_DIR="$STATE_DIR/alignment"
+    mkdir -p "$STATE_DIR"
+    NOW=$(date +%s)
+    WATCH_PENDING="$STATE_DIR/pending"
+    : > "$WATCH_PENDING"
+    watch_record 114.252.120.44 freq 517 500 7200 -
+    watch_record 2001:0db8:0000:0000:0000:0000:0000:0001 apirate 2147483647 2147483647 60 example.com/api
+    watch_record 198.51.100.1 api 203 200 7200 example.com/a
+    watch_publish formal "$WATCH_PENDING"
+    LC_ALL=C cmd_watch > "$STATE_DIR/table"
+    cat "$STATE_DIR/table"
+    python3 - "$STATE_DIR/table" <<'PY'
+import re, sys, unicodedata
+lines = open(sys.argv[1]).read().splitlines()[1:]
+def starts(line):
+    positions = [m.start() for m in re.finditer(r'\S.*?(?= {2,}|$)', line)]
+    return [sum(2 if unicodedata.east_asian_width(c) in ('W','F') else 1
+                for c in line[:p]) for p in positions]
+expected = starts(lines[0])
+assert len(expected) == 9, expected
+for line in lines[1:]:
+    assert '\t' not in line
+    assert starts(line) == expected, (line, starts(line), expected)
+PY
+)
+echo '通过 中文表头与三种规则、IPv4/IPv6和长计数的终端显示列对齐'
