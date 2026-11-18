@@ -77,6 +77,7 @@ swiftban status            # 分别查看当前执行、最近模式和定时任
 sudo swiftban doctor       # 检查依赖、配置、防火墙、状态和调度并给出修复提示
 swiftban list              # 列出封禁 IP
 swiftban list --ip 114.252.120.44  # 查询该IP原始访问日志
+swiftban geo refresh       # 手动补全封禁/观察IP来源地
 swiftban ban 1.2.3.4       # 手动封禁
 swiftban unban 1.2.3.4     # 手动解封
 swiftban whitelist add 10.0.0.0/8   # 白名单管理
@@ -117,6 +118,22 @@ swiftban watch --help                   # 完整命令说明
 正式与演练观察独立保存在 `${STATE_DIR}/watch/`，默认保留 **7 天**，可在配置中设置 `WATCH_RETENTION_DAYS`。每轮完整扫描后保存，查询不等待扫描锁。升级前的控制台 WATCH 输出不会补录，需完成新扫描才开始积累记录；列表为空时请检查是否执行过对应模式的扫描，以及查询时间范围。`swiftban status` 可查看观察摘要，`swiftban doctor` 可检查记录目录及格式。
 
 更多存储与清理说明见 [配置说明](docs/configuration.md#watch-观察记录)。
+
+### IP 来源地（手动刷新）
+
+封禁列表、WATCH 和单 IP 原始日志明细均可显示本地缓存的来源地与运营商。扫描和查看命令**不会联网查询**，首次显示“未查询”时请手动刷新：
+
+```bash
+sudo swiftban geo refresh                       # 封禁IP优先，再处理正式/演练WATCH
+sudo swiftban geo refresh --ip 8.8.8.8           # 查询单个IP
+sudo swiftban geo refresh --ip 8.8.8.8 --force   # 强制更新，不绕过接口限流
+swiftban geo show 8.8.8.8                       # 查看来源地、ISP、组织、AS和缓存时间
+swiftban geo --help
+```
+
+需要可选依赖 `curl` 和 `jq`（Debian/Ubuntu：`sudo apt install curl jq`）；缺失时检测照常运行。成功缓存有效7天，失败后退避1小时并保留旧的成功数据，过期数据带标记展示。每次最多请求30个IP，未处理完时再次执行刷新；无独立定时任务。缓存保存于 `${STATE_DIR}/geo/`，与封禁、WATCH状态分开。
+
+归属地来自 [ip-api 免费接口](https://ip-api.com/docs/api:json)，使用 HTTP，官方限制每个出口IP每分钟45次且不允许商业使用。刷新串行限速并遵守服务端限流响应；私有/本地地址不发请求。来源地表示网络归属信息，仅供复核，不作为自动封禁依据。
 
 ### 定时任务
 

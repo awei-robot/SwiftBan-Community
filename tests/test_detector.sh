@@ -25,6 +25,8 @@ source "${LIBS}/logger.sh"
 # shellcheck disable=SC1090,SC1091
 source "${LIBS}/watch.sh"
 # shellcheck disable=SC1090,SC1091
+source "${LIBS}/geo.sh"
+# shellcheck disable=SC1090,SC1091
 source "${LIBS}/whitelist.sh"
 
 echo "=== 白名单测试 ==="
@@ -410,7 +412,7 @@ if (
     iptables() { return 0; }
     ip6tables() { return 0; }
     export -f iptables ip6tables
-    for module in logger firewall whitelist runtime watch detector; do
+    for module in logger firewall whitelist runtime geo watch detector; do
         test -r "$SWIFTBAN_LIB/$module.sh" || exit 1
     done
     SWIFTBAN_CONF="$SWIFTBAN_HOME/swiftban.conf" "$SWIFTBAN_BIN" configtest > "$T/installed/output" || exit 1

@@ -582,6 +582,7 @@ rt_doctor() {
     if [[ -d "$STATE_DIR" && -r "$STATE_DIR" && -w "$STATE_DIR" && -x "$STATE_DIR" ]]; then printf '通过 状态目录可读写: %s\n' "$STATE_DIR"
     else printf '失败 状态目录不存在或不可读写: %s\n  修复: 创建 STATE_DIR 并授权 SwiftBan 运行用户读写\n' "$STATE_DIR"; failures=$((failures+1)); fi
     watch_doctor || failures=$((failures+1))
+    geo_doctor || failures=$((failures+1))
     if (( EUID == 0 )); then printf '通过 当前用户为 root\n'
     else printf '警告 当前用户不是 root，防火墙及进程控制检查可能无法完成\n'; warnings=$((warnings+1)); fi
 

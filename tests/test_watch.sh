@@ -5,6 +5,7 @@ PROJECT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$PROJECT_DIR/lib/logger.sh"
 source "$PROJECT_DIR/lib/whitelist.sh"
 source "$PROJECT_DIR/lib/watch.sh"
+source "$PROJECT_DIR/lib/geo.sh"
 source "$PROJECT_DIR/lib/detector.sh"
 STATE_DIR=$(mktemp -d)
 trap 'rm -rf "$STATE_DIR"' EXIT
@@ -80,7 +81,7 @@ def starts(line):
     return [sum(2 if unicodedata.east_asian_width(c) in ('W','F') else 1
                 for c in line[:p]) for p in positions]
 expected = starts(lines[0])
-assert len(expected) == 9, expected
+assert len(expected) == 11, expected
 for line in lines[1:]:
     assert '\t' not in line
     assert starts(line) == expected, (line, starts(line), expected)

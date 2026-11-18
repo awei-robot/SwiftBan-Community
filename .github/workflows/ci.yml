@@ -11,10 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y shellcheck gawk python3 util-linux
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck gawk python3 util-linux curl jq
       - run: shellcheck bin/swiftban.sh lib/*.sh tests/test*.sh install/install.sh
       - run: bash tests/test_detector.sh
       - run: bash tests/test_maintenance.sh
       - run: bash tests/test_watch.sh
       - run: bash tests/test_list_ip.sh
+      - run: bash tests/test_geo.sh
       - run: bash tests/test_runtime.sh

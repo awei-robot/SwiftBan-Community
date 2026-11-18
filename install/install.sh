@@ -55,6 +55,10 @@ check_deps() {
         error "  CentOS/RHEL:   yum install gawk"
         exit 1
     fi
+    local optional
+    for optional in curl jq; do
+        command -v "$optional" >/dev/null 2>&1 || warn "可选来源地功能需要 $optional；不影响日志检测"
+    done
     info "依赖检查通过（awk 支持 mktime 和区间正则）"
 }
 
@@ -67,7 +71,7 @@ install_files() {
     # 主程序
     install -m 755 "${SCRIPT_DIR}/bin/swiftban.sh" "${SWIFTBAN_BIN}" || return 1
     # 模块
-    for lib in logger firewall whitelist runtime watch detector; do
+    for lib in logger firewall whitelist runtime geo watch detector; do
         install -m 644 "${SCRIPT_DIR}/lib/${lib}.sh" "${SWIFTBAN_LIB}/${lib}.sh" || return 1
     done
     # 配置
@@ -193,6 +197,7 @@ main() {
     echo
     echo "  手动执行:  swiftban run"
     echo "  查看状态:  swiftban status"
+    echo "  来源地:    sudo swiftban geo refresh（仅手动刷新，查看 geo --help）"
     echo "  观察列表:  swiftban watch（仅告警，使用 swiftban watch --help 查看说明）"
     echo "  配置编辑:  ${SWIFTBAN_HOME}/swiftban.conf"
     echo "  文档:      ${SCRIPT_DIR}/docs/"

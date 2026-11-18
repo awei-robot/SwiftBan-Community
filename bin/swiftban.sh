@@ -71,14 +71,14 @@ load_config() {
 load_libs() {
     local lib path
     # 先核对全部模块，避免部分加载后继续调用不存在的函数。
-    for lib in logger firewall whitelist runtime watch detector; do
+    for lib in logger firewall whitelist runtime geo watch detector; do
         path="${SWIFTBAN_LIB_DIR}/${lib}.sh"
         if [[ ! -r "$path" ]]; then
             echo "错误: 无法读取模块 ${path}，请从同一版本源码重新运行安装脚本" >&2
             return 1
         fi
     done
-    for lib in logger firewall whitelist runtime watch detector; do
+    for lib in logger firewall whitelist runtime geo watch detector; do
         # shellcheck disable=SC1090
         if ! source "${SWIFTBAN_LIB_DIR}/${lib}.sh"; then
             echo "错误: 加载模块 ${SWIFTBAN_LIB_DIR}/${lib}.sh 失败" >&2
@@ -123,16 +123,29 @@ cmd_list() {
     else
         echo "=== 封禁列表 (banlist.txt) ==="
     fi
-    if [[ -f "${BANLIST}" ]]; then
-        printf "%-18s %-10s %-8s %s\n" "IP" "时间" "TTL" "原因"
-        while IFS='|' read -r ip ts ttl reason; do
-            [[ -z "$ip" ]] && continue
-            printf "%-18s %-10s %-8s %s\n" "$ip" "$(date -d "@$ts" '+%m-%d %H:%M' 2>/dev/null || echo "$ts")" "$ttl" "$reason"
-        done < "${BANLIST}"
-    else
-        echo "(空)"
-    fi
+    cmd_list_bans
 }
+
+cmd_list_bans() (
+    local wd ip ts ttl reason time
+    wd=$(mktemp -d) || return 1
+    trap 'rm -rf "$wd"' EXIT
+    : > "$wd/rows"
+    if [[ -f "$BANLIST" ]]; then
+        while IFS='|' read -r ip ts ttl reason || [[ -n "$ip" ]]; do
+            [[ -n "$ip" ]] || continue
+            time=$(date -d "@$ts" '+%m-%d %H:%M' 2>/dev/null || date -r "$ts" '+%m-%d %H:%M' 2>/dev/null || echo "$ts")
+            printf '%s\t%s\t%s\t%s\n' "$ip" "$time" "$ttl" "$reason" >> "$wd/rows" || return 1
+        done < "$BANLIST"
+    fi
+    geo_enrich "$wd/rows" "$wd/enriched" 1 2147483647 || return 1
+    {
+        printf 'IP\t来源地\t运营商\t时间\tTTL\t原因\n'
+        awk -F '\t' 'BEGIN{OFS="\t"} {print $1,$5,$6,$2,$3,$4}' "$wd/enriched"
+    } > "$wd/table" || return 1
+    geo_table "$wd/table" || return 1
+    [[ -s "$wd/rows" ]] || echo '(空)'
+)
 
 list_ip_usage() {
     cat <<'EOF'
@@ -148,6 +161,7 @@ list 列出保存的封禁记录，list --dry-run 查看最近完整演练结果
 读取 LOG_DIR 第一层所有支持格式日志及未压缩轮转文件，不限制文件修改时间；
 不读取压缩文件。不匹配无效/未来记录，不把URI或UA中的IP作为客户端。
 未查到不代表没有历史访问；日志轮转和扫描期间追加可能影响本次查询。
+来源地摘要只读缓存，可用 sudo swiftban geo refresh --ip <IP> 手动补全。
 查询不修改封禁或观察状态，也不等待扫描锁。
 EOF
 }
@@ -189,6 +203,7 @@ cmd_list_ip() (
     total=$(wc -l < "$wd/raw.tsv")
     invalid=$(awk -F '\t' '{n+=$3} END {print n+0}' "$wd/stats.tsv")
     echo "=== IP 原始访问记录: $ip ==="
+    geo_brief "$ip" || return 1
     if [[ -n "$since" ]]; then echo "范围: 最近 ${WINDOW} 秒；不限制文件修改时间；LOG_DIR=$LOG_DIR"
     else echo "范围: 全部可用日志时间；不限制文件修改时间；LOG_DIR=$LOG_DIR"; fi
     echo "排序: 按日志时间从早到晚"
@@ -323,6 +338,7 @@ WATCH 观察列表：单接口高频、单接口速率和总请求高频仅告�
 时间为 UTC；统计限于查询范围。正式与演练独立保存，默认保留7天，
 可通过 WATCH_RETENTION_DAYS 修改。升级前的控制台 WATCH 输出不补录。
 完成新扫描后开始积累记录；列表为空时可检查扫描模式和查询时间范围。
+来源地和运营商只读本地缓存，使用 sudo swiftban geo refresh 手动补全。
 EOF
 }
 
@@ -349,6 +365,8 @@ SwiftBan v${SWIFTBAN_VERSION} - Nginx 攻击检测与自动封禁
   whitelist list       列出白名单
   install-cron         安装定时任务（每分钟）
   configtest           配置检查
+  geo refresh          手动刷新封禁及观察IP的来源地（支持 --ip IP、--force）
+  geo show <IP>        查看该IP的来源地缓存详情
   doctor               运维诊断并提示修复方法
   version              版本信息
 
@@ -374,6 +392,13 @@ main() {
         watch)
             if [[ $# == 1 && ( "$1" == --help || "$1" == -h ) ]]; then watch_usage; return; fi
             ;;
+        geo)
+            if [[ $# == 0 || ( $# == 1 && ( "$1" == --help || "$1" == -h ) ) ]]; then
+                # shellcheck disable=SC1090,SC1091
+                source "$SWIFTBAN_LIB_DIR/geo.sh" || return 1
+                geo_usage; return
+            fi
+            ;;
         run|start|stop|status|ban|unban|whitelist|wl|install-cron|configtest|doctor|__worker) ;;
         *) usage; return 1 ;;
     esac
@@ -395,6 +420,7 @@ main() {
             esac ;;
         install-cron) cmd_install_cron ;;
         configtest) cmd_configtest ;;
+        geo) cmd_geo "$@" ;;
         doctor) (( $# == 0 )) || return 1; rt_doctor ;;
         __worker) (( $# == 3 )) || return 1; rt_worker "$@" ;;
     esac
