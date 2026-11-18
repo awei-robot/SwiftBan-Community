@@ -40,7 +40,7 @@ geo_valid() {
       (.last_error|type)=="string" and
       ([.updated_at,.last_attempt,.retry_after]|all(.[];.>=0 and .<=99999999999 and .==floor)) and
       (.geo==null or (.geo|type)=="object" and
-        ([.geo.country,.geo.regionName,.geo.city,.geo.isp,.geo.org,.geo.as,.geo.query] | all(.[];type=="string")))
+        ([.geo.country,.geo.regionName,.geo.city,.geo.isp,.geo.org,.geo["as"],.geo.query] | all(.[];type=="string")))
     ' "$2" >/dev/null 2>&1
 }
 
@@ -60,7 +60,7 @@ geo_read() (
       def clean: gsub("[\u0000-\u001f\u007f-\u009f]";" ")|.[0:256];
       .last_error |= clean |
       if .geo==null then .+{state:"failed",location:"查询失败",isp:"-"}
-      else .geo |= ({country,regionName,city,isp,org,as,query}|with_entries(.value |= clean)) |
+      else .geo |= ({"country":.country,"regionName":.regionName,"city":.city,"isp":.isp,"org":.org,"as":.["as"],"query":.query}|with_entries(.value |= clean)) |
         .+{state:(if $now-.updated_at>=604800 then "stale" else "fresh" end),
         location:([.geo.country,.geo.regionName,.geo.city]|map(select(length>0))|reduce .[] as $x ([];if index($x)==null then .+[$x] else . end)|join("/")),isp:.geo.isp} |
         .location=(if .location=="" then "未知" else .location end) |
@@ -194,7 +194,7 @@ geo_refresh() (
         if [[ -z "$error" && "$code" != 200 ]]; then error="HTTP $code"; fi
         result='null'
         if [[ -z "$error" ]]; then
-            if ! jq -e 'type=="object" and .status=="success" and ([.country,.regionName,.city,.isp,.org,.as,.query]|all(.[];type=="string"))' "$body" >/dev/null 2>&1; then
+            if ! jq -e 'type=="object" and .status=="success" and ([.country,.regionName,.city,.isp,.org,.["as"],.query]|all(.[];type=="string"))' "$body" >/dev/null 2>&1; then
                 error='接口失败或返回无效 JSON'
                 if jq -e '.status=="fail" and (.message|type)=="string"' "$body" >/dev/null 2>&1; then
                     error=$(jq -r '.message|gsub("[\u0000-\u001f\u007f-\u009f]";" ")|.[0:256]' "$body")
@@ -203,7 +203,7 @@ geo_refresh() (
                 query=$(jq -r '.query' "$body")
                 query=$(wl_normalize_ip "$query") || query=''
                 if [[ "$query" != "$ip" ]]; then error='返回 IP 与请求不一致'
-                else result=$(jq -c '.|{country,regionName,city,isp,org,as,query}|with_entries(.value |= (gsub("[\u0000-\u001f\u007f-\u009f]";" ")|.[0:256]))' "$body") || return 1; fi
+                else result=$(jq -c '.|{"country":.country,"regionName":.regionName,"city":.city,"isp":.isp,"org":.org,"as":.["as"],"query":.query}|with_entries(.value |= (gsub("[\u0000-\u001f\u007f-\u009f]";" ")|.[0:256]))' "$body") || return 1; fi
             fi
         fi
         now=$(date +%s)
@@ -236,7 +236,7 @@ cmd_geo() {
             if command -v jq >/dev/null 2>&1; then
                 jq -r 'def time: if .==null or .==0 then "-" else todateiso8601 end;
                   "缓存状态: \({fresh:"有效",stale:"已过期",failed:"查询失败",missing:"未查询",local:"内网/保留地址",unavailable:"功能不可用"}[.state])\n来源地: \(.location)\n运营商: \(.isp)",
-                  (if .geo then "国家: \(.geo.country)\n省/州: \(.geo.regionName)\n城市: \(.geo.city)\n组织: \(.geo.org)\nAS: \(.geo.as)\n更新时间: \(.updated_at|todateiso8601)" else empty end),
+                  (if .geo then "国家: \(.geo.country)\n省/州: \(.geo.regionName)\n城市: \(.geo.city)\n组织: \(.geo.org)\nAS: \(.geo["as"])\n更新时间: \(.updated_at|todateiso8601)" else empty end),
                   "最近尝试: \(.last_attempt|time)\n重试时间: \(.retry_after|time)\n最近错误: \(.last_error//"")"' <<< "$data"
             else echo '归属地功能不可用，需要 jq'; fi ;;
         *) geo_usage >&2; return 1 ;;

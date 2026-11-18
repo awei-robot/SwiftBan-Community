@@ -37,7 +37,7 @@ curl() {
         mismatch) ip=8.8.4.4 ;;
     esac
     printf 'X-Rl: 40\r\nX-Ttl: 60\r\n' > "$headers"
-    jq -n --arg ip "$ip" '{status:"success",country:"中国",regionName:"北京市",city:"北京市",isp:"示例\n运营商",org:"Test Org",as:"AS123 Example",query:$ip}' > "$body"
+    jq -n --arg ip "$ip" '{status:"success",country:"中国",regionName:"北京市",city:"北京市",isp:"示例\n运营商",org:"Test Org","as":"AS123 Example",query:$ip}' > "$body"
     printf 200
 }
 count() { if [[ -f "$T/calls" ]]; then wc -l < "$T/calls" | tr -d ' '; else echo 0; fi; }
@@ -48,7 +48,7 @@ cache_edit() {
 }
 geo_refresh --ip 8.8.8.8 > "$T/summary"
 [[ $(count) == 1 ]]
-geo_read 8.8.8.8 | jq -e '.state=="fresh" and .location=="中国/北京市" and .isp=="示例 运营商"' >/dev/null
+geo_read 8.8.8.8 | jq -e '.state=="fresh" and .location=="中国/北京市" and .isp=="示例 运营商" and .geo["as"]=="AS123 Example"' >/dev/null
 geo_refresh --ip 8.8.8.8 >/dev/null
 [[ $(count) == 1 ]]
 geo_refresh --ip 8.8.8.8 --force >/dev/null
@@ -114,11 +114,11 @@ before_cache=$(cksum "$STATE_DIR/geo/8.8.8.8.json")
 # 支持真实 flock 的 Linux CI 验证独立刷新锁冲突。
 if [[ "$(uname -s)" == Linux ]]; then
     (
-        flock() { builtin command flock "$@"; }
+        flock() { command flock "$@"; }
         exec 6> "$STATE_DIR/geo/.refresh.lock"
-        builtin command flock -n 6
+        command flock -n 6
         if geo_refresh --ip 1.1.1.1 --force > "$T/locked" 2>&1; then exit 1; fi
-        grep -q '归属地刷新正在执行' "$T/locked"
+        if ! grep -q '归属地刷新正在执行' "$T/locked"; then cat "$T/locked" >&2; exit 1; fi
     )
     echo '通过 Linux 真实刷新锁冲突'
 else
@@ -142,7 +142,7 @@ if geo_doctor >/dev/null; then exit 1; fi
         ip="${url#http://ip-api.com/json/}"; ip="${ip%%\?*}"
         echo "$ip" >> "$T/batch-calls"
         echo 'X-Rl: 40' > "$headers"
-        jq -n --arg ip "$ip" '{status:"success",country:"X",regionName:"",city:"",isp:"ISP",org:"",as:"",query:$ip}' > "$body"
+        jq -n --arg ip "$ip" '{status:"success",country:"X",regionName:"",city:"",isp:"ISP",org:"","as":"",query:$ip}' > "$body"
         printf 200
     }
     if geo_refresh > "$T/batch-summary"; then exit 1; fi
