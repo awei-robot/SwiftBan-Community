@@ -8,7 +8,7 @@ set -uo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # 版本
-SWIFTBAN_VERSION="1.0.3"
+SWIFTBAN_VERSION="1.0.4"
 
 # 配置文件路径（可通过环境变量覆盖）
 SWIFTBAN_CONF="${SWIFTBAN_CONF:-/etc/swiftban/swiftban.conf}"
