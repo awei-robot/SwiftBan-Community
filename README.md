@@ -75,7 +75,8 @@ swiftban stop              # 终止当前扫描、撤销管理的规则，保留
 swiftban start             # 恢复未过期封禁并立即正式扫描
 swiftban status            # 分别查看当前执行、最近模式和定时任务配置
 sudo swiftban doctor       # 检查依赖、配置、防火墙、状态和调度并给出修复提示
-swiftban list              # 列出封禁 IP
+swiftban list              # 列出封禁 IP（默认快速，不查询来源地）
+swiftban list --geo        # 附加来源地和运营商
 swiftban list --ip 114.252.120.44  # 查询该IP原始访问日志
 swiftban geo refresh       # 手动补全封禁/观察IP来源地
 swiftban ban 1.2.3.4       # 手动封禁
@@ -110,6 +111,7 @@ swiftban watch --rule freq              # 总请求高频
 swiftban watch --since 7d --limit 100    # 最近7天，最多100项
 swiftban watch --dry-run                # 只查看演练观察
 swiftban watch --json                   # JSON导出，可组合其他筛选参数
+swiftban watch --geo                    # 附加来源地与运营商
 swiftban watch --help                   # 完整命令说明
 ```
 

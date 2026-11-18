@@ -114,20 +114,22 @@ cmd_status() {
 }
 
 cmd_list() {
-    if [[ "${1:-}" == --ip ]]; then shift; cmd_list_ip "$@"; return; fi
+    local geo=0
+    if [[ "${1:-}" == --geo ]]; then geo=1; shift; fi
+    if [[ "${1:-}" == --ip ]]; then shift; cmd_list_ip "$geo" "$@"; return; fi
     if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then list_ip_usage; return; fi
     if [[ "${1:-}" == --dry-run && $# == 1 ]]; then rt_list_dry; return; fi
-    if (( $# > 0 )); then echo "用法: swiftban list [--dry-run | --ip IP [--since 2h] [--limit 100]]" >&2; return 1; fi
+    if (( $# > 0 )); then echo "用法: swiftban list [--geo] [--dry-run | --ip IP [--since 2h] [--limit 100]]" >&2; return 1; fi
     if [[ -e "$STATE_DIR/stopped.tsv" ]]; then
         echo "=== 保存的封禁记录（检测已停止；规则可能待恢复，实际状态见 status）==="
     else
         echo "=== 封禁列表 (banlist.txt) ==="
     fi
-    cmd_list_bans
+    cmd_list_bans "$geo"
 }
 
 cmd_list_bans() (
-    local wd ip ts ttl reason time
+    local geo="${1:-0}" wd ip ts ttl reason time
     wd=$(mktemp -d) || return 1
     trap 'rm -rf "$wd"' EXIT
     : > "$wd/rows"
@@ -138,10 +140,13 @@ cmd_list_bans() (
             printf '%s\t%s\t%s\t%s\n' "$ip" "$time" "$ttl" "$reason" >> "$wd/rows" || return 1
         done < "$BANLIST"
     fi
-    geo_enrich "$wd/rows" "$wd/enriched" 1 2147483647 || return 1
+    if (( geo )); then geo_enrich "$wd/rows" "$wd/enriched" 1 2147483647 || return 1
+    else cp "$wd/rows" "$wd/enriched" || return 1; fi
     {
-        printf 'IP\t来源地\t运营商\t时间\tTTL\t原因\n'
-        awk -F '\t' 'BEGIN{OFS="\t"} {print $1,$5,$6,$2,$3,$4}' "$wd/enriched"
+        if (( geo )); then printf 'IP\t来源地\t运营商\t时间\tTTL\t原因\n';
+        else printf 'IP\t时间\tTTL\t原因\n'; fi
+        if (( geo )); then awk -F '\t' 'BEGIN{OFS="\t"} {print $1,$5,$6,$2,$3,$4}' "$wd/enriched"
+        else cat "$wd/enriched"; fi
     } > "$wd/table" || return 1
     geo_table "$wd/table" || return 1
     [[ -s "$wd/rows" ]] || echo '(空)'
@@ -151,10 +156,11 @@ list_ip_usage() {
     cat <<'EOF'
 用法: swiftban list
       swiftban list --dry-run
-      swiftban list --ip <IP> [--since <时长>] [--limit <数量>]
+      swiftban list [--geo] --ip <IP> [--since <时长>] [--limit <数量>]
 
 list 列出保存的封禁记录，list --dry-run 查看最近完整演练结果。
 查询该IP的原始访问日志，以解析出的客户端IP精确匹配，支持IPv4/IPv6。
+  --geo                显示 IP 来源地缓存
   --since 2h           最近时长，支持 m（分钟）、h（小时）、d（天）；默认不限日志时间
   --limit 100          最多显示数量，默认100，按访问时间从早到晚
 输出来源文件、行号及原始行，保留方法、URI、状态码、UA等原文。
@@ -167,6 +173,7 @@ EOF
 }
 
 cmd_list_ip() (
+    local geo="${1:-0}"; shift
     local ip="${1:-}" limit=100 since="" amount unit wd total invalid
     local NOW_EPOCH WINDOW
     [[ -n "$ip" ]] || { list_ip_usage >&2; return 1; }
@@ -203,7 +210,7 @@ cmd_list_ip() (
     total=$(wc -l < "$wd/raw.tsv")
     invalid=$(awk -F '\t' '{n+=$3} END {print n+0}' "$wd/stats.tsv")
     echo "=== IP 原始访问记录: $ip ==="
-    geo_brief "$ip" || return 1
+    if (( geo )); then geo_brief "$ip" || return 1; fi
     if [[ -n "$since" ]]; then echo "范围: 最近 ${WINDOW} 秒；不限制文件修改时间；LOG_DIR=$LOG_DIR"
     else echo "范围: 全部可用日志时间；不限制文件修改时间；LOG_DIR=$LOG_DIR"; fi
     echo "排序: 按日志时间从早到晚"
@@ -354,9 +361,9 @@ SwiftBan v${SWIFTBAN_VERSION} - Nginx 攻击检测与自动封禁
   start                恢复未过期封禁并立即执行正式检测
   stop                 停止当前扫描并撤销规则，保留记录和 TTL
   status               查看当前执行、最近模式与定时任务
-  watch                查看观察记录（支持 --ip、--rule、--since、--limit、--dry-run、--json）
-  list                 列出保存的封禁记录
-  list --ip <IP>       查询该IP原始访问日志（--since 2h、--limit 100）
+  watch                查看观察记录（支持 --ip、--rule、--since、--limit、--dry-run、--json、--geo）
+  list                 列出保存的封禁记录（--geo 附加来源地）
+  list --ip <IP>       查询该IP原始访问日志（--geo 可附来源地）
   list --dry-run       查看最近一次完整演练候选
   ban <IP>             手动封禁
   unban <IP>           手动解封

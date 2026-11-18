@@ -92,18 +92,25 @@ echo '通过 429持久化限流且force不能绕过'
 curl() { echo 'unexpected network' >> "$T/unexpected"; return 1; }
 printf '8.8.8.8|1|0|test\n' > "$BANLIST"
 cmd_list > "$T/list"
-grep -q '中国/北京市' "$T/list"
-cmd_list_ip 8.8.8.8 > "$T/raw"
-grep -q '来源地:' "$T/raw"
+grep -q $'IP\t时间\tTTL\t原因' "$T/list"
+if grep -q '来源地' "$T/list" || [[ -e "$T/unexpected" ]]; then exit 1; fi
+cmd_list --geo > "$T/list-geo"
+grep -q '中国/北京市' "$T/list-geo"
+cmd_list_ip 0 8.8.8.8 > "$T/raw"
+if grep -q '来源地:' "$T/raw"; then exit 1; fi
+cmd_list_ip 1 8.8.8.8 > "$T/raw-geo"
+grep -q '来源地: 中国/北京市' "$T/raw-geo"
 mkdir -p "$STATE_DIR/watch/formal/2026-11-18"
 printf '%s\t8.8.8.8\tapi\t203\t200\t7200\texample.com/api\n' "$(date +%s)" > "$STATE_DIR/watch/formal/2026-11-18/.pending.test.tsv"
 cmd_watch --json > "$T/watch.json"
-jq -e '.[0].geo.country=="中国" and .[0].count==203' "$T/watch.json" >/dev/null
+jq -e '.[0].count==203 and (has("geo")|not)' "$T/watch.json" >/dev/null
+cmd_watch --geo --json > "$T/watch-geo.json"
+jq -e '.[0].geo.country=="中国"' "$T/watch-geo.json" >/dev/null
 cmd_geo show 8.8.8.8 > "$T/show"
 grep -q 'AS123' "$T/show"
 geo_doctor >/dev/null
 [[ ! -e "$T/unexpected" && ! -e "$STATE_DIR/.lock" ]]
-echo '通过 列表、明细、WATCH JSON和详情只读缓存，不联网不申请扫描锁'
+echo '通过默认列表和WATCH不读取归属地；--geo附加缓存；不联网不申请扫描锁'
 # 模拟原子替换失败，已发布缓存必须保持原样。
 before_cache=$(cksum "$STATE_DIR/geo/8.8.8.8.json")
 (

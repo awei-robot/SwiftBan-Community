@@ -42,7 +42,12 @@ cmd_watch --dry-run --json | python3 -c 'import json,sys; r=json.load(sys.stdin)
 echo '通过 筛选、条数限制、正式与演练隔离'
 : > "$WATCH_PENDING"
 watch_publish formal "$WATCH_PENDING"
-cmd_watch --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin))==3'
+cmd_watch --json | python3 -c 'import json,sys; r=json.load(sys.stdin); assert len(r)==3 and all("geo" not in x for x in r)'
+cmd_watch --geo --json | python3 -c 'import json,sys; r=json.load(sys.stdin); assert len(r)==3 and all("geo" in x for x in r)'
+LC_ALL=C cmd_watch > "$STATE_DIR/default-table"
+if grep -q '来源地\|运营商' "$STATE_DIR/default-table"; then exit 1; fi
+LC_ALL=C cmd_watch --geo > "$STATE_DIR/geo-table"
+grep -q '来源地.*运营商' "$STATE_DIR/geo-table"
 watch_summary > "$STATE_DIR/summary"
 grep -q '近24小时命中IP=2' "$STATE_DIR/summary"
 watch_doctor
@@ -71,7 +76,7 @@ echo '通过 非法参数、跨模式过期清理与损坏文件诊断'
     watch_record 2001:0db8:0000:0000:0000:0000:0000:0001 apirate 2147483647 2147483647 60 example.com/api
     watch_record 198.51.100.1 api 203 200 7200 example.com/a
     watch_publish formal "$WATCH_PENDING"
-    LC_ALL=C cmd_watch > "$STATE_DIR/table"
+    LC_ALL=C cmd_watch --geo > "$STATE_DIR/table"
     cat "$STATE_DIR/table"
     python3 - "$STATE_DIR/table" <<'PY'
 import re, sys, unicodedata

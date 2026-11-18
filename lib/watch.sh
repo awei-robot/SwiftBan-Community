@@ -30,12 +30,13 @@ watch_publish() (
 )
 
 cmd_watch() (
-    local mode=formal ip='' rule='' since=24h limit=50 json=0 seconds now tmp file
+    local mode=formal ip='' rule='' since=24h limit=50 json=0 geo=0 seconds now tmp file
     while (( $# )); do
         case "$1" in
             -h|--help) watch_usage; return ;;
             --dry-run) mode=dry-run; shift ;;
             --json) json=1; shift ;;
+            --geo) geo=1; shift ;;
             --ip|--rule|--since|--limit)
                 (( $# >= 2 )) || { echo "缺少参数: $1" >&2; return 1; }
                 case "$1" in
@@ -72,8 +73,9 @@ cmd_watch() (
         }
         END {for(k in row) print last[k] "\t" first[k] "\t" peak[k] "\t" hits[k] "\t" row[k]}
     ' "$tmp/input" | LC_ALL=C sort -t $'\t' -k1,1nr -k6,6 -k7,7 -k11,11 > "$tmp/rows" || return 1
-    geo_enrich "$tmp/rows" "$tmp/enriched" 6 "$limit" || return 1
-    LC_ALL=C det_awk -F '\t' -v limit="$limit" -v json="$json" -v mode="$mode" '
+    if (( geo )); then geo_enrich "$tmp/rows" "$tmp/enriched" 6 "$limit" || return 1
+    else cp "$tmp/rows" "$tmp/enriched" || return 1; fi
+    LC_ALL=C det_awk -F '\t' -v limit="$limit" -v json="$json" -v mode="$mode" -v geo="$geo" '
         function esc(s, i,c,r,j,encoded) {
             r=""; for(i=1;i<=length(s);i++) {c=substr(s,i,1); if(c=="\\" || c=="\"") r=r "\\" c; else {encoded=0;for(j=1;j<32;j++) if(c==sprintf("%c",j)) {r=r sprintf("\\u%04x",j);encoded=1;break} if(!encoded) r=r c}} return r
         }
@@ -98,13 +100,17 @@ cmd_watch() (
             else {
                 cell(0,1,"IP");cell(0,2,"规则");cell(0,3,"最近计数/阈值")
                 cell(0,4,"峰值");cell(0,5,"命中轮次");cell(0,6,"首次发现")
-                cell(0,7,"最后发现");cell(0,8,"窗口秒");cell(0,9,"来源地");cell(0,10,"运营商");cell(0,11,"接口")
+                cell(0,7,"最后发现");cell(0,8,"窗口秒")
+                if(geo) {cell(0,9,"来源地");cell(0,10,"运营商");cell(0,11,"接口")}
+                else cell(0,9,"接口")
             }
         }
         NR<=limit {
             if(json) {
                 if(n++) printf ","
-                printf "{\"ip\":\"%s\",\"rule\":\"%s\",\"count\":%s,\"threshold\":%s,\"peak\":%s,\"scans\":%s,\"first_seen\":%s,\"last_seen\":%s,\"window_seconds\":%s,\"endpoint\":\"%s\",\"geo\":%s}", esc($6),$7,$8,$9,$3,$4,$2,$1,$10,esc($11),$14
+                printf "{\"ip\":\"%s\",\"rule\":\"%s\",\"count\":%s,\"threshold\":%s,\"peak\":%s,\"scans\":%s,\"first_seen\":%s,\"last_seen\":%s,\"window_seconds\":%s,\"endpoint\":\"%s\"", esc($6),$7,$8,$9,$3,$4,$2,$1,$10,esc($11)
+                if(geo) printf ",\"geo\":%s",$14
+                printf "}"
             } else {
                 label=($7=="api"?"单接口高频":($7=="apirate"?"单接口速率":"总请求高频"))
                 shown++
@@ -112,7 +118,9 @@ cmd_watch() (
                 cell(shown,4,$3);cell(shown,5,$4)
                 cell(shown,6,strftime("%m-%d %H:%M",$2,1))
                 cell(shown,7,strftime("%m-%d %H:%M",$1,1))
-                cell(shown,8,$10);cell(shown,9,$12);cell(shown,10,$13);cell(shown,11,$11)
+                cell(shown,8,$10)
+                if(geo) {cell(shown,9,$12);cell(shown,10,$13);cell(shown,11,$11)}
+                else cell(shown,9,$11)
             }
         }
         END {
@@ -120,9 +128,10 @@ cmd_watch() (
             else {
                 print "=== WATCH 观察列表（" mode "，次数不跨扫描累加；时间为 UTC）==="
                 for(r=0;r<=shown;r++) {
-                    for(c=1;c<=11;c++) {
+                    columns=(geo?11:9)
+                    for(c=1;c<=columns;c++) {
                         printf "%s",cells[r,c]
-                        if(c<11) printf "%*s",widths[c]-display_width(cells[r,c])+2,""
+                        if(c<columns) printf "%*s",widths[c]-display_width(cells[r,c])+2,""
                     }
                     printf "\n"
                 }
