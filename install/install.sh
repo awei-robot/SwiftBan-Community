@@ -56,9 +56,23 @@ check_deps() {
         exit 1
     fi
     local optional
+    local -a optional_missing=()
+    info "检查 IP 来源地功能的可选依赖..."
     for optional in curl jq; do
-        command -v "$optional" >/dev/null 2>&1 || warn "可选来源地功能需要 $optional；不影响日志检测"
+        if command -v "$optional" >/dev/null 2>&1; then
+            info "来源地依赖: $optional ✓ 已安装"
+        else
+            warn "来源地依赖: $optional ✗ 未安装"
+            optional_missing+=("$optional")
+        fi
     done
+    if (( ${#optional_missing[@]} > 0 )); then
+        warn "来源地手动刷新暂不可用，不影响日志检测和封禁"
+        info "  Debian/Ubuntu: apt install ${optional_missing[*]}"
+        info "  CentOS/RHEL:   yum install ${optional_missing[*]}"
+    else
+        info "来源地依赖检查通过，使用 swiftban geo refresh 手动刷新"
+    fi
     info "依赖检查通过（awk 支持 mktime 和区间正则）"
 }
 
