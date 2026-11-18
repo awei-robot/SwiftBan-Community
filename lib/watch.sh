@@ -33,6 +33,7 @@ cmd_watch() (
     local mode=formal ip='' rule='' since=24h limit=50 json=0 seconds now tmp file
     while (( $# )); do
         case "$1" in
+            -h|--help) watch_usage; return ;;
             --dry-run) mode=dry-run; shift ;;
             --json) json=1; shift ;;
             --ip|--rule|--since|--limit)
@@ -44,7 +45,7 @@ cmd_watch() (
                     --limit) limit="$2" ;;
                 esac
                 shift 2 ;;
-            *) echo '用法: swiftban watch [--ip IP] [--rule api|apirate|freq] [--since 24h|7d] [--limit N] [--dry-run] [--json]' >&2; return 1 ;;
+            *) echo "未知选项: $1；使用 swiftban watch --help 查看参数说明" >&2; return 1 ;;
         esac
     done
     [[ "$since" =~ ^([1-9][0-9]{0,4})([hHdD])$ && "$limit" =~ ^[1-9][0-9]{0,5}$ ]] || return 1

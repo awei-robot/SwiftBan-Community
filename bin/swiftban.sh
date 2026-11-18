@@ -223,6 +223,36 @@ cmd_configtest() {
 }
 
 #---------------- 帮助 ----------------
+watch_usage() {
+    cat <<'EOF'
+用法: swiftban watch [选项]
+
+WATCH 观察列表：单接口高频、单接口速率和总请求高频仅告警，不单独封禁。
+默认查看正式扫描近24小时记录，按最后发现时间倒序，最多50项。
+
+选项:
+  --ip <IP>            筛选单个 IPv4/IPv6 地址
+  --rule <规则>        api=单接口高频，apirate=单接口速率，freq=总请求高频
+  --since <时长>       查询最近时段，如 24h、7d（小时 h 或天 d）
+  --limit <数量>       最多显示条数，默认50
+  --dry-run            查看演练观察，默认查看正式扫描
+  --json               输出 JSON，便于导出和脚本处理
+  -h, --help           显示本帮助
+
+示例:
+  swiftban watch
+  swiftban watch --ip 123.114.230.31
+  swiftban watch --rule api --since 7d --limit 100
+  swiftban watch --dry-run --json
+
+字段包含最近计数/当时阈值、峰值、命中轮次、首次/最后发现和接口。
+次数不跨扫描累加；同轮多个超限分钟取最大计数，只计一个命中轮次。
+时间为 UTC；统计限于查询范围。正式与演练独立保存，默认保留7天，
+可通过 WATCH_RETENTION_DAYS 修改。升级前的控制台 WATCH 输出不补录。
+完成新扫描后开始积累记录；列表为空时可检查扫描模式和查询时间范围。
+EOF
+}
+
 usage() {
     cat << EOF
 SwiftBan v${SWIFTBAN_VERSION} - Nginx 攻击检测与自动封禁
@@ -248,6 +278,11 @@ SwiftBan v${SWIFTBAN_VERSION} - Nginx 攻击检测与自动封禁
   doctor               运维诊断并提示修复方法
   version              版本信息
 
+WATCH 示例:
+  swiftban watch --rule api --since 7d
+  swiftban watch --dry-run
+  swiftban watch --help       查看全部参数与字段说明
+
 配置: ${SWIFTBAN_CONF}
 EOF
 }
@@ -259,7 +294,10 @@ main() {
     case "$cmd" in
         version|-v|--version) echo "SwiftBan v${SWIFTBAN_VERSION}"; return ;;
         help|-h|--help) usage; return ;;
-        run|start|stop|status|watch|list|ls|ban|unban|whitelist|wl|install-cron|configtest|doctor|__worker) ;;
+        watch)
+            if [[ $# == 1 && ( "$1" == --help || "$1" == -h ) ]]; then watch_usage; return; fi
+            ;;
+        run|start|stop|status|list|ls|ban|unban|whitelist|wl|install-cron|configtest|doctor|__worker) ;;
         *) usage; return 1 ;;
     esac
     load_config

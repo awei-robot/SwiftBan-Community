@@ -193,6 +193,7 @@ main() {
     echo
     echo "  手动执行:  swiftban run"
     echo "  查看状态:  swiftban status"
+    echo "  观察列表:  swiftban watch（仅告警，使用 swiftban watch --help 查看说明）"
     echo "  配置编辑:  ${SWIFTBAN_HOME}/swiftban.conf"
     echo "  文档:      ${SCRIPT_DIR}/docs/"
 }

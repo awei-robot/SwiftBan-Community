@@ -83,6 +83,28 @@ swiftban whitelist remove 10.0.0.0/8
 swiftban whitelist list
 ```
 
+### WATCH 观察列表
+
+WATCH 用于复核流量超限情况。单接口高频（窗口内总量）、单接口速率（每分钟）和总请求高频均只记录观察，不单独触发封禁；其他攻击规则仍可封禁同一 IP。
+
+```bash
+swiftban watch                          # 正式扫描近24小时，最多50项
+swiftban watch --ip 123.114.230.31       # 筛选指定IP，支持IPv4/IPv6
+swiftban watch --rule api               # 单接口高频
+swiftban watch --rule apirate           # 单接口速率
+swiftban watch --rule freq              # 总请求高频
+swiftban watch --since 7d --limit 100    # 最近7天，最多100项
+swiftban watch --dry-run                # 只查看演练观察
+swiftban watch --json                   # JSON导出，可组合其他筛选参数
+swiftban watch --help                   # 完整命令说明
+```
+
+列表按最后发现时间倒序，展示最近计数/当时阈值、峰值、命中轮次、首次/最后发现（UTC）和接口。按 IP＋规则＋域名及完整 URI 聚合；总请求高频按 IP 聚合。统计限于查询时间范围，重叠窗口的请求数不累加；同一扫描中多个分钟超限只计一轮，并取最大分钟计数。
+
+正式与演练观察独立保存在 `${STATE_DIR}/watch/`，默认保留 **7 天**，可在配置中设置 `WATCH_RETENTION_DAYS`。每轮完整扫描后保存，查询不等待扫描锁。升级前的控制台 WATCH 输出不会补录，需完成新扫描才开始积累记录；列表为空时请检查是否执行过对应模式的扫描，以及查询时间范围。`swiftban status` 可查看观察摘要，`swiftban doctor` 可检查记录目录及格式。
+
+更多存储与清理说明见 [配置说明](docs/configuration.md#watch-观察记录)。
+
 ### 定时任务
 
 ```bash
