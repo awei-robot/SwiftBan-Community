@@ -29,15 +29,15 @@ printf '[%s] 200 - POST https example.com "/new?a=1" [Client 198.51.100.1] [Leng
 printf '2001:db8::1 - - [%s] "GET /v6 HTTP/1.1" 200 0 "-" "Mozilla"\n' "$new" > "$LOG_DIR/v6_access.log"
 printf 'unchanged\n' > "$STATE_DIR/banlist.txt"
 cmd_list --ip 198.51.100.1 > "$T/result"
-grep -q '命中: 2 条' "$T/result"
+grep -q '命中: 3 条' "$T/result"
 grep -q 'site_access.log:2' "$T/result"
 grep -q 'npm_access.log:1' "$T/result"
 grep -qF "$(cat "$LOG_DIR/npm_access.log")" "$T/result"
 python3 - "$T/result" <<'PY'
 import sys
 s=open(sys.argv[1]).read()
-assert s.index('/new?a=1') < s.index('/old HTTP')
-for value in ['/expired HTTP','/future HTTP','/198.51.100.1 HTTP']:
+assert s.index('/expired HTTP') < s.index('/old HTTP') < s.index('/new?a=1')
+for value in ['/future HTTP','/198.51.100.1 HTTP']:
     assert value not in s
 PY
 cmd_list --ip 198.51.100.1 --limit 1 --since 1m > "$T/limited"
@@ -54,17 +54,23 @@ if cmd_list --ip 198.51.100.1 --since bad >/dev/null 2>&1; then exit 1; fi
 # 原始查询保留轮转文件的重复行，可通过来源区分。
 cp "$LOG_DIR/npm_access.log" "$LOG_DIR/npm_access.log.1"
 cmd_list --ip 198.51.100.1 > "$T/rotation"
-grep -q '命中: 3 条' "$T/rotation"
+grep -q '命中: 4 条' "$T/rotation"
 grep -q 'npm_access.log.1:1' "$T/rotation"
 rm "$LOG_DIR/npm_access.log.1"
-# 较旧文件按既有文件筛选策略排除。
+# 历史查询包括较旧文件，自动扫描仍按3分钟筛选。
 touch -t 202001010000 "$LOG_DIR/site_access.log"
 cmd_list --ip 198.51.100.1 > "$T/mtime"
-grep -q '命中: 1 条' "$T/mtime"
+grep -q '命中: 3 条' "$T/mtime"
+mkdir "$T/recent"
+det_collect "$T/recent"
+if grep -q '/old HTTP' "$T/recent/input.tsv"; then exit 1; fi
+cmd_list --ip 198.51.100.1 --limit 1 > "$T/first"
+grep -q '/expired HTTP' "$T/first"
+if grep -q '/old HTTP' "$T/first"; then exit 1; fi
 (
     # shellcheck disable=SC2329 # 间接调用的故障替身
     det_collect() { return 1; }
     if cmd_list --ip 198.51.100.1 > "$T/failed" 2>/dev/null; then exit 1; fi
     [[ ! -s "$T/failed" ]]
 )
-echo '通过 原始日志与行号、时间倒序、客户端精确匹配、IPv6、时间和数量筛选、旧文件排除、无命中与失败处理、不修改状态'
+echo '通过 原始日志与行号、时间正序、客户端精确匹配、IPv6、时间和数量筛选、包含旧文件且默认不限日志时间、自动扫描仍排除旧文件、无命中与失败处理、不修改状态'

@@ -137,10 +137,14 @@ det_check_config() {
     done
 }
 
-# 输入协议：来源文件<TAB>日志家族<TAB>原始行；只读最近3分钟修改的文件，同一 inode 只读一次。
+# 输入协议：来源文件<TAB>日志家族<TAB>原始行；默认只读最近3分钟修改文件，history 查询不限制修改时间。
 det_collect() {
-    local wd="$1" file base family suffix identity after seen="|"
-    find "$LOG_DIR" -maxdepth 1 -type f -name '*access.log*' -mmin -3 -print0 > "$wd/files" || return 1
+    local wd="$1" scope="${2:-recent}" file base family suffix identity after seen="|"
+    if [[ "$scope" == history ]]; then
+        find "$LOG_DIR" -maxdepth 1 -type f -name '*access.log*' -print0 > "$wd/files" || return 1
+    else
+        find "$LOG_DIR" -maxdepth 1 -type f -name '*access.log*' -mmin -3 -print0 > "$wd/files" || return 1
+    fi
     : > "$wd/input.tsv" || return 1
     while IFS= read -r -d '' file; do
         base="${file##*/}"
