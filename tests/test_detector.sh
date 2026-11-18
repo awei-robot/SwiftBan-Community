@@ -208,6 +208,20 @@ if grep -q 'WATCH 单IP单接口速率 198.51.100.1 | 30次/分钟' "$T/decision
     ! grep -q '\[DRY-RUN\] 将封禁 198.51.100.1.*单接口速率' "$T/decisions"; then
     ok "相同接口达到速率阈值只告警且不生成封禁候选"
 else fail "相同接口达到速率阈值只告警且不生成封禁候选"; fi
+# 总量阈值达到时，正式和演练均只观察。
+old_api="$LIMIT_API"
+LIMIT_API=30
+: > "$T/fw.calls"
+det_decide "$WD" > "$T/api-watch"
+if grep -q 'WATCH 单接口高频 198.51.100.1 | 30次/' "$T/api-watch"; then
+    ok "单接口总量达到阈值只记录WATCH"
+else fail "单接口总量达到阈值只记录WATCH"; fi
+eq "$(rows "$T/fw.calls")" 0 "单接口总量超限不执行封禁"
+decisions
+if grep -q '\[DRY-RUN\] 将封禁' "$T/decisions"; then
+    fail "单接口总量超限不生成演练封禁候选"
+else ok "单接口总量超限不生成演练封禁候选"; fi
+LIMIT_API="$old_api"
 reset_logs
 for host in a.example.com b.example.com; do
     for i in $(seq 1 29); do record "$(npm /same Mozilla/5.0 200 198.51.100.1 '' "$host")"; done

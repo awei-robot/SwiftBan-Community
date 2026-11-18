@@ -476,8 +476,18 @@ det_decide() {
     _apply "${wd}/ip_payload.txt" "$LIMIT_PAYLOAD" ip    "漏洞载荷" || return 1
     _apply "${wd}/ip_ua.txt"      "$LIMIT_UA"     ip     "可疑UA" || return 1
     _apply "${wd}/ip_auth.txt"    "$LIMIT_AUTH"   ip     "登录爆破" || return 1
-    _apply "${wd}/ip_api.txt"     "$LIMIT_API"    ipuri  "单接口高频" || return 1
     _apply "${wd}/ip_emptyua.txt" "$LIMIT_EMPTYUA" ip    "空UA" || return 1
+
+    # 窗口内单接口总量同样可能来自共享 NAT，仅观察。
+    while read -r count rest; do
+        [[ -n "$rest" ]] || continue
+        if (( count >= LIMIT_API )); then
+            ip="${rest%% *}"; endpoint="${rest#* }"
+            if ! wl_is_whitelisted "$ip" && ! fw_is_banned "$ip"; then
+                log_warn "WATCH 单接口高频 $ip | ${count}次/${WINDOW}s | $endpoint" || true
+            fi
+        fi
+    done < "${wd}/ip_api.txt"
 
     # 单IP单接口速率只告警，不单独封禁；共用NAT出口的请求可能来自多个用户。
     while read -r count rest; do
