@@ -92,7 +92,7 @@ echo '通过 429持久化限流且force不能绕过'
 curl() { echo 'unexpected network' >> "$T/unexpected"; return 1; }
 printf '8.8.8.8|1|0|test\n' > "$BANLIST"
 cmd_list > "$T/list"
-grep -q $'IP\t时间\tTTL\t原因' "$T/list"
+grep -Eq 'IP +时间 +TTL +原因' "$T/list"
 if grep -q '来源地' "$T/list" || [[ -e "$T/unexpected" ]]; then exit 1; fi
 cmd_list --geo > "$T/list-geo"
 grep -q '中国/北京市' "$T/list-geo"
@@ -103,7 +103,7 @@ grep -q '来源地: 中国/北京市' "$T/raw-geo"
 mkdir -p "$STATE_DIR/watch/formal/2026-11-18"
 printf '%s\t8.8.8.8\tapi\t203\t200\t7200\texample.com/api\n' "$(date +%s)" > "$STATE_DIR/watch/formal/2026-11-18/.pending.test.tsv"
 cmd_watch --json > "$T/watch.json"
-jq -e '.[0].count==203 and (has("geo")|not)' "$T/watch.json" >/dev/null
+jq -e '.[0].count==203 and (.[0]|has("geo")|not)' "$T/watch.json" >/dev/null
 cmd_watch --geo --json > "$T/watch-geo.json"
 jq -e '.[0].geo.country=="中国"' "$T/watch-geo.json" >/dev/null
 cmd_geo show 8.8.8.8 > "$T/show"
