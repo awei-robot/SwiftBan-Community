@@ -71,14 +71,14 @@ load_config() {
 load_libs() {
     local lib path
     # 先核对全部模块，避免部分加载后继续调用不存在的函数。
-    for lib in logger firewall whitelist runtime geo watch detector; do
+    for lib in logger firewall whitelist runtime geo watch detector scanstate; do
         path="${SWIFTBAN_LIB_DIR}/${lib}.sh"
         if [[ ! -r "$path" ]]; then
             echo "错误: 无法读取模块 ${path}，请从同一版本源码重新运行安装脚本" >&2
             return 1
         fi
     done
-    for lib in logger firewall whitelist runtime geo watch detector; do
+    for lib in logger firewall whitelist runtime geo watch detector scanstate; do
         # shellcheck disable=SC1090
         if ! source "${SWIFTBAN_LIB_DIR}/${lib}.sh"; then
             echo "错误: 加载模块 ${SWIFTBAN_LIB_DIR}/${lib}.sh 失败" >&2

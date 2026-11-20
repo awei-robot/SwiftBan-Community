@@ -167,7 +167,7 @@ swiftban install-cron      # 安装每分钟执行 cron（或使用 systemd time
 
 ```
 Nginx/NPM 活动日志及未压缩轮转文件
-      │ 第一层目录仅收集最近3分钟修改的文件，轮转重叠去重
+      │ 新文件按3分钟mtime发现，已登记inode按字节游标续读，跨轮转保留窗口事件
       ▼
 统一字段解析 → 按日志时区转 UTC → WINDOW 时间过滤
       ▼
@@ -182,7 +182,7 @@ banlist.txt 持久化 / TTL 自动解封 / 规则自动恢复
 
 详细设计见 [docs/architecture.md](docs/architecture.md)，配置项见 [docs/configuration.md](docs/configuration.md)。
 
-只支持上述已定义格式，未知或非法记录会跳过并报告数量；读取或解析程序失败时停止本轮新增封禁。仅读取最近3分钟修改的活动及未压缩轮转文件，入选文件仍按条目时间和 WINDOW 过滤；较早停止写入的文件不参与本轮统计。gzip、JSON、syslog 和任意自定义格式暂不支持。接口按 IP + 域名 + 完整 URI（保留查询参数）分组；combined 使用日志文件家族隔离站点。
+只支持上述已定义格式，未知或非法记录会跳过并报告数量；读取或解析程序失败时停止本轮新增封禁。新文件通过最近3分钟 mtime发现，已登记文件按设备号/inode和字节游标读取新增完整行；事件快照保留当前 WINDOW，rename 轮转后仍可续读和跨轮转统计。copytruncate 会通过文件缩短或末行指纹变化检测后重读并去重，但复制与截断之间仍可能丢日志。状态保存在 STATE_DIR/scan/state.tsv，不使用数据库；快照含窗口内原始行并限制为仅 root 可读；升级后不回填未登记的旧日志。gzip、JSON、syslog 和任意自定义格式暂不支持。接口按 IP + 域名 + 完整 URI（保留查询参数）分组；combined 使用日志文件家族隔离站点。
 
 上线前请在目标版本的脱敏真实日志上执行 dry-run，检查格式错误及封禁候选。历史封禁及阈值不会自动调整。
 

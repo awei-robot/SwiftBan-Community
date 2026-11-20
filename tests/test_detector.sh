@@ -61,6 +61,8 @@ source "$PROJECT_DIR/config/swiftban.conf"
 export LOG_FORMAT WINDOW EVIL_PAYLOAD LIMIT_HIGHFREQ
 # shellcheck disable=SC1090,SC1091
 source "$LIBS/detector.sh"
+# shellcheck disable=SC1090,SC1091
+source "$LIBS/scanstate.sh"
 if ! det_awk 'BEGIN {if(mktime("2026 11 16 12 00 00")<0 || "123" !~ /^[0-9]{3}$/) exit 1}' >/dev/null 2>&1; then
     echo "错误: 完整测试需要支持 mktime 和区间正则的 awk（macOS 请安装 gawk）"
     exit 1
@@ -342,7 +344,7 @@ if (fw_ban() { return 1; }; det_ban 198.51.100.3 "测试"); then fail "防火墙
 eq "$(rows "$STATE_DIR/banlist.txt")" 0 "防火墙失败不写状态"
 printf '198.51.100.2|%s|3600|测试恢复\n198.51.100.3|%s|1|测试过期\n' "$NOW" "$((NOW-100))" > "$STATE_DIR/banlist.txt"
 # shellcheck disable=SC2329
-if (det_collect() { return 1; }; det_run 0 > "$T/run.output"); then fail "收集失败中止运行"; else ok "收集失败中止运行"; fi
+if (det_scan_collect() { return 1; }; det_run 0 > "$T/run.output"); then fail "收集失败中止运行"; else ok "收集失败中止运行"; fi
 eq "$(cat "$T/fw.calls")" $'BAN 198.51.100.2\nUNBAN 198.51.100.3' "收集失败仍先恢复和解封，且不新增封禁"
 eq "$(rows "$STATE_DIR/banlist.txt")" 1 "过期状态正常移除"
 : > "$T/fw.calls"
@@ -379,8 +381,47 @@ done > "$LOG_DIR/site_access.log"
 det_run 0 > "$T/run.output" || { fail "完整运行失败"; exit 1; }
 eq "$(cat "$T/fw.calls")" "BAN 198.51.100.1" "完整run只封真实客户端，不封伪造IP"
 eq "$(rows "$STATE_DIR/banlist.txt")" 1 "完整run成功后写入一条封禁状态"
+state_scan_pass() {
+    local wd count
+    wd=$(mktemp -d) || return 1
+    if (( $# > 0 )); then NOW_EPOCH="$1"
+    else NOW_EPOCH=$(date -u +%s) || return 1; fi
+    NOW="$NOW_EPOCH"
+    det_scan_collect "$wd" || return 1
+    : > "$wd/future.tsv"
+    det_parse "$wd/input.tsv" "$wd/recent.new.tsv" "$wd/stats.tsv" "" "$wd/future.tsv" || return 1
+    det_scan_rewind_future "$wd" || return 1
+    det_scan_prepare "$wd" || return 1
+    count=$(rows "$wd/recent.log")
+    det_scan_commit "$wd" || return 1
+    rm -rf "$wd"
+    printf '%s\n' "$count"
+}
+eq "$(state_scan_pass)" 5 "重复扫描不会重复计入已提交日志"
+rename_stamp=$(LC_ALL=C date -u '+%d/%b/%Y:%H:%M:%S +0000')
+mv "$LOG_DIR/site_access.log" "$LOG_DIR/site_access.log.1"
+printf '%s\n' "$(npm /rotation-append Mozilla/5.0 200 198.51.100.1 "$rename_stamp")" >> "$LOG_DIR/site_access.log.1"
+printf '%s\n' "$(npm /new-active Mozilla/5.0 200 198.51.100.1 "$rename_stamp")" > "$LOG_DIR/site_access.log"
+eq "$(state_scan_pass)" 7 "rename轮转后续读旧inode并发现新活动文件"
+cp "$LOG_DIR/site_access.log" "$LOG_DIR/site_access.log.2"
+printf '%s\n' "$(npm /copytruncate-new Mozilla/5.0 200 198.51.100.1 "$rename_stamp")" > "$LOG_DIR/site_access.log"
+eq "$(state_scan_pass | tail -n 1)" 8 "copytruncate重置读取位置且轮转副本不重复计数"
+printf '%s' "$(npm /partial-line Mozilla/5.0 200 198.51.100.1 "$rename_stamp")" >> "$LOG_DIR/site_access.log"
+eq "$(state_scan_pass | tail -n 1)" 8 "未写完的日志行不提前推进游标"
+printf '\n' >> "$LOG_DIR/site_access.log"
+eq "$(state_scan_pass | tail -n 1)" 9 "日志行补齐后从原游标位置读取"
+future_epoch=$(( $(date -u +%s) + 300 ))
+future_stamp=$(LC_ALL=C date -u -d "@$future_epoch" '+%d/%b/%Y:%H:%M:%S +0000' 2>/dev/null ||
+    LC_ALL=C date -u -r "$future_epoch" '+%d/%b/%Y:%H:%M:%S +0000')
+printf '%s\n' "$(npm /future Mozilla/5.0 200 198.51.100.1 "$future_stamp")" >> "$LOG_DIR/site_access.log"
+eq "$(state_scan_pass | tail -n 1)" 9 "未来时间行暂不统计"
+eq "$(state_scan_pass "$future_epoch" | tail -n 1)" 10 "未来时间到达后游标重新读取并统计"
+printf 'invalid state\n' > "$STATE_DIR/scan/state.tsv"
+if det_scan_collect "$WD" >/dev/null 2>&1; then fail "损坏的游标状态必须停止扫描"; else ok "损坏的游标状态停止扫描且不推进"; fi
 : > "$STATE_DIR/banlist.txt"
 : > "$T/fw.calls"
+rm -f "$STATE_DIR/scan/state.tsv"
+rm -f "$LOG_DIR"/site_access.log*
 printf 'unknown\n' > "$LOG_DIR/site_access.log"
 det_run 0 > "$T/run.output" || { fail "全坏日志运行失败"; exit 1; }
 eq "$(rows "$T/fw.calls")" 0 "完整run全坏日志不新增封禁"
@@ -412,7 +453,7 @@ if (
     iptables() { return 0; }
     ip6tables() { return 0; }
     export -f iptables ip6tables
-    for module in logger firewall whitelist runtime geo watch detector; do
+    for module in logger firewall whitelist runtime geo watch detector scanstate; do
         test -r "$SWIFTBAN_LIB/$module.sh" || exit 1
     done
     SWIFTBAN_CONF="$SWIFTBAN_HOME/swiftban.conf" "$SWIFTBAN_BIN" configtest > "$T/installed/output" || exit 1

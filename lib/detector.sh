@@ -137,7 +137,7 @@ det_check_config() {
     done
 }
 
-# 输入协议：来源文件<TAB>日志家族<TAB>原始行；默认只读最近3分钟修改文件，history 查询不限制修改时间。
+# 输入协议：来源文件<TAB>日志家族<TAB>原始行；history 查询不限制修改时间。
 det_collect() {
     local wd="$1" scope="${2:-recent}" file base family suffix identity after seen="|"
     if [[ "$scope" == history ]]; then
@@ -181,8 +181,10 @@ det_collect() {
 # 可选第4参数为查询IP：输出 epoch、来源、原始行号、原始行，不做轮转去重。
 # 保留转义文本，不解码 URL 或 \xXX，防止记录/字段分隔符注入。
 det_parse() {
+    local future_path=""
+    if (( $# >= 5 )); then future_path="$5"; fi
     local src="$1" dst="$2" stats="$3" query_ip="${4:-}"
-    LC_ALL=C TZ=UTC SWIFTBAN_STATS="$stats" SWIFTBAN_QUERY_IP="$query_ip" det_awk \
+    LC_ALL=C TZ=UTC SWIFTBAN_STATS="$stats" SWIFTBAN_QUERY_IP="$query_ip" SWIFTBAN_FUTURE="$future_path" det_awk \
         -v now="$NOW_EPOCH" -v win="$WINDOW" -v fmt="$LOG_FORMAT" "$(ip_awk)"'
     function validip(s) {return ip_canon(s)!=""}
     # 引号内的 [Client ...] 只是字符串，不是结构化字段。
@@ -294,13 +296,30 @@ det_parse() {
     {
         first=index($0,"\t")
         source=substr($0,1,first-1); rest=substr($0,first+1)
-        second=index(rest,"\t"); family=substr(rest,1,second-1); raw=substr(rest,second+1)
+        second=index(rest,"\t"); family=substr(rest,1,second-1); rest=substr(rest,second+1)
+        event_id=""; group_id=""
+        third=index(rest,"\t")
+        if(third) {
+            possible_id=substr(rest,1,third-1)
+            remainder=substr(rest,third+1)
+            fourth=index(remainder,"\t")
+            if(possible_id~/^[0-9]+:[0-9]+:[0-9]+:[0-9]+$/ && fourth) {
+                event_id=possible_id
+                group_id=substr(remainder,1,fourth-1)
+                raw=substr(remainder,fourth+1)
+            } else raw=rest
+        } else raw=rest
         sources[source]=1
         source_line=++source_lines[source]
         if(!first || !second || raw~/[[:cntrl:]]/ || !parse(raw,family)) {
             invalid[source]++; next
         }
-        if(epoch>now) {future[source]++; next}
+        if(epoch>now) {
+            future[source]++
+            if(event_id!="" && ENVIRON["SWIFTBAN_FUTURE"]!="")
+                print event_id >> ENVIRON["SWIFTBAN_FUTURE"]
+            next
+        }
         if(epoch<now-win) {expired[source]++; next}
         valid[source]++
         # 复核模式保留每条原始记录和行号，不使用轮转去重后的统计输出。
@@ -308,12 +327,17 @@ det_parse() {
             if(ip==ENVIRON["SWIFTBAN_QUERY_IP"]) print epoch,source,source_line,raw
             next
         }
-        # 同家族跨文件采用最大重数，避免轮转重叠引起重复封禁统计。
-        occurrence=++perfile[source SUBSEP raw]
-        key=family SUBSEP raw
-        if(occurrence<=maximum[key]) {duplicate[source]++; next}
-        maximum[key]=occurrence
-        print epoch,ip,status,verb,host,uri,ua,ref,source
+        if(event_id!="") {
+            # Stateful collection resolves overlap across the complete event window.
+            print epoch,ip,status,verb,host,uri,ua,ref,source,event_id,group_id,family,raw
+        } else {
+            # 同家族跨文件采用最大重数，避免轮转重叠引起重复封禁统计。
+            occurrence=++perfile[source SUBSEP raw]
+            key=family SUBSEP raw
+            if(occurrence<=maximum[key]) {duplicate[source]++; next}
+            maximum[key]=occurrence
+            print epoch,ip,status,verb,host,uri,ua,ref,source
+        }
     }
     END {
         for(source in sources)
@@ -344,15 +368,25 @@ det_run() (
         det_restore || return 1
         det_unban_expired || return 1
     fi
+    mkdir -p "$STATE_DIR/scan" || return 1
     det_phase collecting || return 1
-    if ! det_collect "$workdir"; then
+    if ! det_scan_collect "$workdir"; then
         log_error "日志收集失败，本轮停止新增封禁"
         return 1
     fi
     : > "$workdir/stats.tsv" || return 1
+    : > "$workdir/future.tsv" || return 1
     det_phase parsing || return 1
-    if ! det_parse "$workdir/input.tsv" "$workdir/recent.log" "$workdir/stats.tsv"; then
+    if ! det_parse "$workdir/input.tsv" "$workdir/recent.new.tsv" "$workdir/stats.tsv" "" "$workdir/future.tsv"; then
         log_error "日志解析程序失败，本轮停止新增封禁"
+        return 1
+    fi
+    if ! det_scan_rewind_future "$workdir"; then
+        log_error "未来日志时间处理失败，本轮不推进日志游标"
+        return 1
+    fi
+    if ! det_scan_prepare "$workdir"; then
+        log_error "扫描事件状态合并失败，本轮停止新增封禁"
         return 1
     fi
     while IFS=$'\t' read -r source valid invalid expired future duplicate; do
@@ -402,6 +436,10 @@ det_run() (
     fi
     if ! watch_publish "$( [[ "$dry_run" == 1 ]] && echo dry-run || echo formal )" "$WATCH_PENDING"; then
         log_error "WATCH 保存失败，本轮观察结果未完整保存"
+        return 1
+    fi
+    if ! det_scan_commit "$workdir"; then
+        log_error "扫描游标提交失败；下轮将重读本轮数据"
         return 1
     fi
     lines=$(wc -l < "$workdir/recent.log")
