@@ -331,6 +331,7 @@ WATCH 观察列表：单接口高频、单接口速率和总请求高频仅告�
   --since <时长>       查询最近时段，如 24h、7d（小时 h 或天 d）
   --limit <数量>       最多显示条数，默认50
   --dry-run            查看演练观察，默认查看正式扫描
+  --samples <告警ID>   查看指定告警的原始日志样本
   --json               输出 JSON，便于导出和脚本处理
   -h, --help           显示本帮助
 
@@ -338,10 +339,12 @@ WATCH 观察列表：单接口高频、单接口速率和总请求高频仅告�
   swiftban watch
   swiftban watch --ip 123.114.230.31
   swiftban watch --rule api --since 7d --limit 100
+  swiftban watch --samples 20261121-W00001
   swiftban watch --dry-run --json
 
-字段包含最近计数/当时阈值、峰值、命中轮次、首次/最后发现和接口。
+字段包含告警ID、样本数、最近计数/当时阈值、峰值、命中轮次、首次/最后发现和接口。
 次数不跨扫描累加；同轮多个超限分钟取最大计数，只计一个命中轮次。
+每条告警最多保存5条原始日志样本，查询告警ID可查看来源文件和原始行。
 时间为 UTC；统计限于查询范围。正式与演练独立保存，默认保留7天，
 可通过 WATCH_RETENTION_DAYS 修改。升级前的控制台 WATCH 输出不补录。
 完成新扫描后开始积累记录；列表为空时可检查扫描模式和查询时间范围。
@@ -361,7 +364,7 @@ SwiftBan v${SWIFTBAN_VERSION} - Nginx 攻击检测与自动封禁
   start                恢复未过期封禁并立即执行正式检测
   stop                 停止当前扫描并撤销规则，保留记录和 TTL
   status               查看当前执行、最近模式与定时任务
-  watch                查看观察记录（支持 --ip、--rule、--since、--limit、--dry-run、--json、--geo）
+  watch                查看观察记录（支持 --ip、--rule、--since、--limit、--dry-run、--samples <ID>、--json、--geo）
   list                 列出保存的封禁记录（--geo 附加来源地）
   list --ip <IP>       查询该IP原始访问日志（--geo 可附来源地）
   list --dry-run       查看最近一次完整演练候选
@@ -379,6 +382,7 @@ SwiftBan v${SWIFTBAN_VERSION} - Nginx 攻击检测与自动封禁
 
 WATCH 示例:
   swiftban watch --rule api --since 7d
+  swiftban watch --samples <告警ID>
   swiftban watch --dry-run
   swiftban watch --help       查看全部参数与字段说明
 

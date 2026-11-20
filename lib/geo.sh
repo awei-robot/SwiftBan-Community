@@ -144,7 +144,11 @@ geo_refresh() (
             find "$STATE_DIR/watch" -type f -name '.pending.*.tsv' > "$wd/files" || return 1
             while IFS= read -r file; do
                 [[ -e "$file" ]] || continue
-                awk -F '\t' -v cutoff="$cutoff" '!/^#/ && NF==7 && $1>=cutoff {print $1 "\t" $2}' "$file" >> "$wd/watch" || return 1
+                awk -F '\t' -v cutoff="$cutoff" '
+                    $1=="S" {exit}
+                    NF==7 && $1~/^[0-9]+$/ && $1>=cutoff {print $1 "\t" $2; next}
+                    $1=="A" && NF==11 && $3~/^[0-9]+$/ && $3>=cutoff {print $3 "\t" $4}
+                ' "$file" >> "$wd/watch" || return 1
             done < "$wd/files"
         fi
         sort -t $'\t' -k1,1nr "$wd/watch" | cut -f2 >> "$wd/ips" || return 1

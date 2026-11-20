@@ -401,6 +401,7 @@ det_run() (
         return 1
     fi
     local WATCH_PENDING="$workdir/watch.tsv"
+    local WATCH_EVENTS="$workdir/recent.events.tsv"
     : > "$WATCH_PENDING" || return 1
     det_phase deciding || return 1
     if [[ "$dry_run" == "1" ]]; then
@@ -434,7 +435,7 @@ det_run() (
         if declare -F rt_may_enforce >/dev/null; then rt_may_enforce || return 1; fi
         det_decide "$workdir" || return 1
     fi
-    if ! watch_publish "$( [[ "$dry_run" == 1 ]] && echo dry-run || echo formal )" "$WATCH_PENDING"; then
+    if ! watch_publish "$( [[ "$dry_run" == 1 ]] && echo dry-run || echo formal )" "$WATCH_PENDING" "$WATCH_EVENTS"; then
         log_error "WATCH 保存失败，本轮观察结果未完整保存"
         return 1
     fi
@@ -496,7 +497,7 @@ det_detect_all() {
 
 # 封禁决策
 det_decide() {
-    local wd="$1" mode="${2:-normal}" candidates="${3:-}" count rest ip endpoint
+    local wd="$1" mode="${2:-normal}" candidates="${3:-}" count rest ip endpoint minute
 
     _apply() {
         local file="$1" threshold="$2" fmt="$3" reason="$4"
@@ -540,7 +541,7 @@ det_decide() {
         if (( count >= LIMIT_API )); then
             ip="${rest%% *}"; endpoint="${rest#* }"
             if ! wl_is_whitelisted "$ip" && ! fw_is_banned "$ip"; then
-                watch_record "$ip" api "$count" "$LIMIT_API" "$WINDOW" "$endpoint" || return 1
+                watch_record "$ip" api "$count" "$LIMIT_API" "$WINDOW" "$endpoint" "-" || return 1
                 log_warn "WATCH 单接口高频 $ip | ${count}次/${WINDOW}s | $endpoint" || true
             fi
         fi
@@ -553,7 +554,8 @@ det_decide() {
             ip="${rest#*|}"; ip="${ip%%|*}"
             endpoint="${rest#*|*|}"
             if ! wl_is_whitelisted "$ip" && ! fw_is_banned "$ip"; then
-                watch_record "$ip" apirate "$count" "$LIMIT_API_RATE" 60 "$endpoint" || return 1
+                minute="${rest%%|*}"
+                watch_record "$ip" apirate "$count" "$LIMIT_API_RATE" 60 "$endpoint" "$minute" || return 1
                 log_warn "WATCH 单IP单接口速率 $ip | ${count}次/分钟 | $endpoint" || true
             fi
         fi
@@ -563,7 +565,7 @@ det_decide() {
     while read -r count ip; do
         if (( count >= LIMIT_HIGHFREQ )); then
             if ! fw_is_banned "$ip" && ! wl_is_whitelisted "$ip"; then
-                watch_record "$ip" freq "$count" "$LIMIT_HIGHFREQ" "$WINDOW" "-" || return 1
+                watch_record "$ip" freq "$count" "$LIMIT_HIGHFREQ" "$WINDOW" "-" "-" || return 1
                 log_info "WATCH 高频 $ip ${count}次/${WINDOW}s" || true
             fi
         fi

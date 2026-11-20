@@ -436,6 +436,31 @@ eq "$(find "$STATE_DIR/watch" -type f -name '*.tsv' | wc -l)" "$before_watch" "�
 if [[ -d "$STATE_DIR/watch/formal" && -d "$STATE_DIR/watch/dry-run" ]]; then
     ok "完整扫描发布正式与演练独立WATCH结果"
 else fail "完整扫描发布正式与演练独立WATCH结果"; fi
+# shellcheck disable=SC2030,SC2034 # Complete scan reads the isolated test configuration.
+if (
+    STATE_DIR="$T/watch-sample-state"
+    LOG_DIR="$T/watch-sample-logs"
+    mkdir -p "$STATE_DIR" "$LOG_DIR"
+    : > "$STATE_DIR/banlist.txt"
+    stamp=$(LC_ALL=C date -u '+%d/%b/%Y:%H:%M:%S +0000')
+    for i in $(seq 1 6); do
+        npm /watch-sample "Trace-Agent-$i" 200 198.51.100.77 "$stamp"
+        echo
+    done > "$LOG_DIR/site_access.log"
+    LIMIT_API=3
+    LIMIT_API_RATE=3
+    LIMIT_HIGHFREQ=3
+    det_run 0 > "$T/watch-sample-run.log" || exit 1
+    watch_file=$(find "$STATE_DIR/watch/formal" -type f -name '.pending.*.tsv' -print -quit)
+    [[ -n "$watch_file" ]] || exit 1
+    awk -F '\t' '
+        $1=="A" {if($6!=6 || $10!=6 || $11!=5) exit 1; ids[$2]=$5; rules[$5]++; alerts++}
+        $1=="S" {samples[$2]++; if($6 ~ /Trace-Agent-1/) first[$2]=1; if($6 ~ /Trace-Agent-6/) last[$2]=1}
+        END {
+            if(alerts!=3 || rules["api"]!=1 || rules["apirate"]!=1 || rules["freq"]!=1) exit 1
+            for(id in ids) if(samples[id]!=5 || !first[id] || !last[id]) exit 1
+        }' "$watch_file"
+); then ok "完整扫描为三类WATCH告警关联同窗口原始样本并原子保存"; else fail "完整扫描保存WATCH原始样本"; fi
 
 
 # 仅在临时目录执行安装文件步骤，不请求 root，不安装 cron。

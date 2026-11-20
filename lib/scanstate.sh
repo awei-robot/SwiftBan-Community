@@ -193,7 +193,8 @@ det_scan_prepare() {
         ' "$wd/state-input.tsv"
     } > "$wd/state.next" || return 1
 
-    det_awk -F '\t' -v cutoff="$cutoff" -v now="$now" '
+    : > "$wd/recent.events.unsorted" || return 1
+    SWIFTBAN_EVENTS="$wd/recent.events.unsorted" det_awk -F '\t' -v cutoff="$cutoff" -v now="$now" '
         BEGIN {OFS="\t"}
         $1=="E" && $2>=cutoff && $2<=now {
             n++
@@ -212,11 +213,16 @@ det_scan_prepare() {
                 split(row[i],f,"\t")
                 rawkey=f[13] SUBSEP f[14]
                 groupkey=rawkey SUBSEP f[12]
-                if(f[12]==best[rawkey] && ++kept[groupkey]<=max[rawkey])
+                if(f[12]==best[rawkey] && ++kept[groupkey]<=max[rawkey]) {
                     print f[2],f[3],f[4],f[5],f[6],f[7],f[8],f[9],f[10]
+                    split(f[11],event_parts,":")
+                    print f[2],f[3],f[4],f[5],f[6],f[7],f[8],f[9],f[10],f[11],f[12],f[13],f[14],event_parts[4] > ENVIRON["SWIFTBAN_EVENTS"]
+                }
             }
         }
     ' "$wd/state.next" > "$wd/recent.log" || return 1
+    LC_ALL=C sort -t $'\t' -k1,1n -k9,9 -k14,14n "$wd/recent.events.unsorted" > "$wd/recent.events.tsv" || return 1
+    rm -f "$wd/recent.events.unsorted"
 }
 
 det_scan_commit() {

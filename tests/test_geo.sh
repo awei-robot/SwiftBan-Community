@@ -101,7 +101,14 @@ if grep -q '来源地:' "$T/raw"; then exit 1; fi
 cmd_list_ip 1 8.8.8.8 > "$T/raw-geo"
 grep -q '来源地: 中国/北京市' "$T/raw-geo"
 mkdir -p "$STATE_DIR/watch/formal/2026-11-18"
-printf '%s\t8.8.8.8\tapi\t203\t200\t7200\texample.com/api\n' "$(date +%s)" > "$STATE_DIR/watch/formal/2026-11-18/.pending.test.tsv"
+watch_stamp=$(date +%s)
+{
+    printf '# watch-v2\t%s\tformal\ttest-run\n' "$watch_stamp"
+    printf 'A\ttest-run-W00001\t%s\t8.8.8.8\tapi\t203\t200\t7200\t11:example.com/api\t203\t5\n' "$watch_stamp"
+    for n in 1 2 3 4 5; do
+        printf 'S\ttest-run-W00001\t%s\t/logs/access.log\t1:2:0:%s\t8.8.8.8 - - [21/Nov/2026:00:00:00 +0000] "GET /api HTTP/1.1" 200 1 "-" "Agent-%s"\n' "$watch_stamp" "$n" "$n"
+    done
+} > "$STATE_DIR/watch/formal/2026-11-18/.pending.test.tsv"
 cmd_watch --json > "$T/watch.json"
 jq -e '.[0].count==203 and (.[0]|has("geo")|not)' "$T/watch.json" >/dev/null
 cmd_watch --geo --json > "$T/watch-geo.json"
