@@ -6,7 +6,7 @@
 
 轻量级 · 零依赖 · 零误封 的自建站 WAF
 
-[![Version](https://img.shields.io/badge/version-1.0.4-blue.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-1.0.5-blue.svg)](VERSION)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/shell-bash%20%2B%20gawk-orange.svg)]()
 
