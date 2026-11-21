@@ -366,6 +366,12 @@ EOF
 bash "$CLI" run > "$T/race-worker.out" 2>&1 &
 supervisor=$!
 if ! await_ready; then
+    printf '启停竞态未进入检测阶段，状态目录内容：\n' >&2
+    find "$STATE" -maxdepth 3 -type f -print >&2
+    for state_file in "$STATE/active.tsv" "$STATE/stopped.tsv" "$STATE"/.run-*/phase "$STATE"/.run-*/ready "$STATE"/.run-*/go; do
+        [[ -r "$state_file" ]] && { printf '%s: ' "$state_file" >&2; cat "$state_file" >&2; }
+    done
+    pgrep -af 'swiftban\.sh|sleep 60' >&2 || true
     cat "$T/race-worker.out" "$T/race-stop.out" 2>/dev/null || true
     exit 1
 fi
