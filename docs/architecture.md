@@ -26,7 +26,7 @@ lib/
 ## 三、数据流
 
 ```
-Nginx/NPM access.log
+Apache/Nginx/NPM access.log
         │
         ▼
 ┌──────────────────┐
@@ -34,7 +34,7 @@ Nginx/NPM access.log
 └────────┬─────────┘
          ▼
 ┌──────────────────┐
-│ 2. 解析/过滤     │  识别 NPM standard/proxy、combined；只解析新增完整行
+│ 2. 解析/过滤     │  识别 Apache common/combined/vhost、NPM standard/proxy、combined；只解析新增完整行
 └────────┬─────────┘
          ▼
 ┌──────────────────┐
@@ -74,7 +74,7 @@ Docker 端口映射流量路径：`PREROUTING(DNAT) → FORWARD → 容器`，�
 
 ### 4.5 统一解析与安全失败
 
-NPM standard、NPM proxy、combined 统一输出 TSV：`epoch、IP、最终状态码、方法、Host、完整 URI、UA、Referer、来源文件`。仅从结构化客户端位置提取经过校验的 IPv4/IPv6；引号字符串内的 `[Client ...]` 不具有身份意义。proxy 缓存和多值上游状态不影响最终状态码或 URI 位置。默认逐行自动识别，也可显式指定格式。
+NPM standard/proxy、Apache common/combined/vhost combined 和 Nginx combined 统一输出 TSV：`epoch、IP、最终状态码、方法、Host、完整 URI、UA、Referer、来源文件`。仅从结构化客户端位置提取经过校验的 IPv4/IPv6；引号字符串内的伪造客户端标记不具有身份意义。Apache common 未记录的 UA/Referer 使用内部缺失标记，跳过依赖这些字段的规则；不会将缺失 UA 作为空 UA 封禁。Apache vhost combined 使用 `%v` 站点字段；普通 combined 缺少 Host 时以日志家族隔离站点。proxy 缓存和多值上游状态不影响最终状态码或 URI 位置。默认逐行自动识别，也可显式指定格式。
 
 路径规则只匹配路径，可疑 UA 只匹配 UA，载荷分别匹配 URI、UA、Referer，不跨字段拼接。保留转义文本；空 UA 接受 `-` 和空字符串；尾部扩展字段不会改变已识别字段的位置。
 
@@ -133,7 +133,7 @@ banlist 采用同目录临时文件加原子重命名写入；即使在规则写
 - 单实例锁（flock）防止并发
 - 观察模式（WATCH）避免误伤未知业务
 
-单接口分组保留查询参数；NPM 使用小写 Host，combined 缺少 Host，使用活动日志家族文件标识隔离站点。
+单接口分组保留查询参数；NPM 和 Apache vhost combined 使用小写 Host，普通 combined 缺少 Host，使用活动日志家族文件标识隔离站点。
 
 ## 八、性能
 

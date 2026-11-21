@@ -2,7 +2,7 @@
 
 # 🛡️ SwiftBan
 
-**基于 Nginx 日志的实时攻击检测与自动封禁系统**
+**基于 Nginx / Apache 日志的实时攻击检测与自动封禁系统**
 
 轻量级 · 零依赖 · 零误封 的自建站 WAF
 
@@ -18,7 +18,7 @@
 
 ## 🎯 这是什么
 
-SwiftBan 通过分析 Nginx / Nginx Proxy Manager 访问日志，实时识别攻击行为（扫描、注入、爆破、CC），并自动用 iptables 封禁恶意 IP。
+SwiftBan 通过分析 Apache、Nginx 和 Nginx Proxy Manager 访问日志，实时识别攻击行为（扫描、注入、爆破、CC），并自动用 iptables 封禁恶意 IP。
 
 **核心理念：只封禁明确攻击特征，绝不误伤正常业务流量。**
 
@@ -34,7 +34,7 @@ SwiftBan 通过分析 Nginx / Nginx Proxy Manager 访问日志，实时识别攻
 - 📦 **零依赖**：纯 Bash + GNU 工具（gawk），单机 5 分钟部署
 - 🔇 **防日志噪音**：白名单 IP 静默跳过
 - 🌐 **时区安全**：按日志时区偏移换算 UTC，拒绝未来时间，精确窗口统计
-- 🧾 **日志格式**：NPM standard/proxy 与 Nginx combined 自动识别，支持未压缩轮转文件
+- 🧾 **日志格式**：NPM standard/proxy、Nginx combined、Apache common/combined/vhost combined 自动识别，支持未压缩轮转文件
 
 ## 🚀 快速开始
 
@@ -57,11 +57,13 @@ sudo ./install/install.sh
 编辑 `/etc/swiftban/swiftban.conf`：
 
 ```ini
-LOG_DIR=/root/proxy-manager/data/logs   # Nginx/NPM 日志目录
-LOG_FORMAT=auto                         # auto / npm_standard / npm_proxy / combined
+LOG_DIR=/root/proxy-manager/data/logs   # Nginx/Apache/NPM 日志目录
+LOG_FORMAT=auto                         # auto / npm_standard / npm_proxy / combined / apache_common / apache_combined / apache_vhost_combined
 BAN_TTL=259200                          # 封禁时长（秒，0=永久）
 WHITELIST=127.0.0.1,::1,192.168.224.1   # 白名单
 ```
+
+`auto` 可在同一日志目录混合识别 Apache common、combined 和虚拟主机 combined（`%v` / `%v:%p`）。Apache common 没有 UA/Referer，因此不会触发这些字段相关的检测或空 UA 检测；客户端 `%h` 应输出数字 IP。
 
 ### 使用
 
@@ -94,7 +96,7 @@ swiftban list --ip 114.252.120.44 --since 30m --limit 200
 swiftban list --help
 ```
 
-按解析出的客户端 IP 精确查询 Nginx/NPM **原始访问日志**，显示来源文件、行号及原始行（含请求方法、URI、状态码、UA 等日志原有字段），按访问时间从早到晚排列。支持等价 IPv6 写法，不会把 URI、UA 或 Referer 中的 IP 当成访问来源。
+按解析出的客户端 IP 精确查询 Apache、Nginx/NPM **原始访问日志**，显示来源文件、行号及原始行（含日志原有的请求方法、URI、状态码、UA 等字段），按访问时间从早到晚排列。支持等价 IPv6 写法，不会把 URI、UA 或 Referer 中的 IP 当成访问来源。
 
 默认查询日志目录第一层全部支持格式日志和未压缩轮转文件，**不限制文件修改时间，也不套用检测窗口**，按日志时间从早到晚最多显示100条；`--since` 可选择最近时段（支持 `m`/`h`/`d`），`--limit` 可调整数量。压缩或已删除的日志无法查询，未查到不代表没有历史访问。原始记录不做轮转去重，无效或未来日志不展示。查询只读，不修改封禁和 WATCH，也不等待扫描锁。
 
@@ -169,7 +171,7 @@ swiftban install-cron      # 安装每分钟执行 cron（或使用 systemd time
 ## 🏗️ 架构
 
 ```
-Nginx/NPM 活动日志及未压缩轮转文件
+Apache/Nginx/NPM 活动日志及未压缩轮转文件
       │ 新文件按3分钟mtime发现，已登记inode按字节游标续读，跨轮转保留窗口事件
       ▼
 统一字段解析 → 按日志时区转 UTC → WINDOW 时间过滤

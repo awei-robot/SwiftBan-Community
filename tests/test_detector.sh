@@ -101,6 +101,18 @@ combined() {
     printf '%s - - [16/Nov/2026:11:59:00 +0000] "GET %s HTTP/1.1" %s 0 "-" "%s"' \
         "${4:-198.51.100.1}" "$1" "${3:-200}" "${2-Mozilla/5.0}"
 }
+apache_common() {
+    printf '%s - - [16/Nov/2026:11:59:00 +0000] "GET %s HTTP/1.1" %s %s' \
+        "${3:-198.51.100.21}" "$1" "${2:-200}" "${4:--}"
+}
+apache_combined() {
+    printf '%s - - [16/Nov/2026:11:59:00 +0000] "GET %s HTTP/1.1" %s %s "%s" "%s"' \
+        "${4:-198.51.100.22}" "$1" "${3:-200}" "${5:-123}" "${6:--}" "${2-Mozilla/5.0}"
+}
+apache_vhost() {
+    printf '%s %s - - [16/Nov/2026:11:59:00 +0000] "GET %s HTTP/1.1" %s %s "%s" "%s"' \
+        "$1" "${4:-198.51.100.23}" "$2" "${3:-200}" "${5:-123}" "${6:--}" "${7:-Mozilla/5.0}"
+}
 process() {
     if ! det_parse "$WD/input.tsv" "$WD/recent.log" "$WD/stats.tsv" || ! det_detect_all "$WD"; then
         fail "解析或统计程序执行失败"
@@ -119,17 +131,36 @@ record "$(proxy - '502, 200' 200 /d)"
 record "$(proxy - '502 : 404' 401 /login)"
 record "$(proxy - - 444 /e)"
 record "$(combined /f Mozilla/5.0 404)"
+record "$(apache_common /apache-common 200 198.51.100.21)"
+record "$(apache_combined /apache-combined Mozilla/5.0 200 198.51.100.22)"
+record "$(apache_vhost example.com:8443 /apache-vhost-port 200 198.51.100.23)"
+record "$(apache_vhost other.example /apache-vhost 200 198.51.100.24)"
 process
-eq "$(rows "$WD/recent.log")" 7 "三种格式、缓存、无上游和多次上游状态均可解析"
+eq "$(rows "$WD/recent.log")" 11 "NPM、Nginx combined 与 Apache 四种格式均可解析"
 eq "$(total scan)" 3 "扫描使用最终状态，忽略上游404和缓存字段"
 eq "$(total auth)" 1 "重试后的最终401参与登录检测"
 eq "$(total 444)" 1 "无上游444检测"
 eq "$(det_awk -F '\t' '$6=="/d" {print $3}' "$WD/recent.log")" 200 "上游重试不会推移URI"
 eq "$(det_awk -F '\t' '$6=="/f" {print $5}' "$WD/recent.log")" "@file:/logs/site_access.log" "combined使用文件家族隔离站点"
-for format in npm_standard npm_proxy combined; do
+eq "$(det_awk -F '\t' '$6=="/apache-common" {print $7 ":" $8}' "$WD/recent.log")" "__SWIFTBAN_NOT_LOGGED__:__SWIFTBAN_NOT_LOGGED__" "Apache common 标记未记录的UA和Referer"
+eq "$(det_awk -F '\t' '$6=="/apache-vhost-port" {print $5}' "$WD/recent.log")" "example.com" "Apache vhost combined 去除端口并小写域名"
+eq "$(det_awk -F '\t' '$6=="/apache-vhost" {print $5}' "$WD/recent.log")" "other.example" "Apache vhost combined 支持不带端口格式"
+old_evil_ua="$EVIL_UA"; old_evil_payload="$EVIL_PAYLOAD"
+EVIL_UA='swiftban_not_logged'; EVIL_PAYLOAD='swiftban_not_logged'
+process
+eq "$(total ua)" 0 "Apache common 缺失UA不触发UA检测"
+eq "$(total payload)" 0 "Apache common 缺失UA和Referer不触发载荷检测"
+eq "$(total emptyua)" 0 "Apache common 缺失UA不触发空UA检测"
+EVIL_UA="$old_evil_ua"; EVIL_PAYLOAD="$old_evil_payload"
+for format in npm_standard npm_proxy combined apache_common apache_combined apache_vhost_combined; do
     LOG_FORMAT="$format"
     process
-    case "$format" in npm_standard|combined) expected=1 ;; npm_proxy) expected=5 ;; esac
+    case "$format" in
+        npm_standard|apache_common) expected=1 ;;
+        npm_proxy) expected=5 ;;
+        combined|apache_combined) expected=2 ;;
+        apache_vhost_combined) expected=2 ;;
+    esac
     eq "$(rows "$WD/recent.log")" "$expected" "显式格式 $format 不接受其他格式"
 done
 LOG_FORMAT=wrong
@@ -294,6 +325,7 @@ line="$(npm /)"
 printf '%s\n%s\n' "$line" "$line" > "$LOG_DIR/site_access.log"
 printf '%s\n%s\n%s\n' "$line" "$line" "$line" > "$LOG_DIR/site_access.log.1"
 printf '%s\n' "$(npm /older)" > "$LOG_DIR/site_access.log-20261116"
+printf '%s\n' "$(apache_vhost example.org:8080 /vhost 200 198.51.100.30)" > "$LOG_DIR/other_vhosts_access.log"
 printf '%s\n' "$(npm /ignored)" > "$LOG_DIR/site_access.log.gz"
 printf '%s\n' "$(npm /ignored)" > "$LOG_DIR/site_access.log.bak"
 ln "$LOG_DIR/site_access.log" "$LOG_DIR/site_access.log.9"
@@ -308,8 +340,8 @@ TZ=UTC touch -t "$cold_stamp" "$LOG_DIR/cold_access.log" "$LOG_DIR/site_access.l
 TZ=UTC touch -t "$warm_stamp" "$LOG_DIR/warm_access.log"
 det_collect "$WD" || { fail "收集日志失败"; exit 1; }
 process
-eq "$(rows "$WD/input.tsv")" 6 "收集空格路径及轮转，忽略压缩、备份、子目录及同inode"
-eq "$(rows "$WD/recent.log")" 4 "轮转重叠采用最大重数，保留单文件重复请求"
+eq "$(rows "$WD/input.tsv")" 7 "收集Nginx与Apache虚拟主机日志及轮转，忽略压缩、备份、子目录及同inode"
+eq "$(rows "$WD/recent.log")" 5 "轮转重叠采用最大重数，保留单文件重复请求"
 if grep -Fq "$LOG_DIR/cold_access.log" "$WD/input.tsv" || grep -Fq "$LOG_DIR/site_access.log-20261116" "$WD/input.tsv"; then
     fail "超过3分钟未修改的活动及轮转文件不读取"
 else
@@ -320,10 +352,10 @@ WINDOW=10800
 printf '%s\n' "$(npm /old Mozilla/5.0 200 198.51.100.1 '16/Nov/2026:09:30:00 +0000')" > "$LOG_DIR/site_access.log.2"
 det_collect "$WD" || exit 1
 process
-eq "$(rows "$WD/recent.log")" 5 "最近修改文件内的旧条目按更大的WINDOW统计"
+eq "$(rows "$WD/recent.log")" 6 "最近修改文件内的旧条目按更大的WINDOW统计"
 WINDOW=7200
 process
-eq "$(rows "$WD/recent.log")" 4 "入选文件仍排除WINDOW之外的旧日志条目"
+eq "$(rows "$WD/recent.log")" 5 "入选文件仍排除WINDOW之外的旧日志条目"
 if (LOG_DIR="$T/missing"; det_collect "$WD" 2>/dev/null); then fail "目录读取失败返回非零"; else ok "目录读取失败返回非零"; fi
 # shellcheck disable=SC2329 # 模块间接调用的 mock。
 if (det_awk() { return 1; }; det_collect "$WD"); then fail "文件读取程序失败返回非零"; else ok "文件读取程序失败返回非零"; fi

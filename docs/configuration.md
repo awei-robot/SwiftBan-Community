@@ -5,12 +5,14 @@
 ## 一、日志与状态
 
 ```ini
-LOG_DIR="/root/proxy-manager/data/logs"   # Nginx/NPM 日志目录
-LOG_FORMAT="auto"                        # auto / npm_standard / npm_proxy / combined
+LOG_DIR="/root/proxy-manager/data/logs"   # Nginx/Apache/NPM 日志目录
+LOG_FORMAT="auto"                        # auto / npm_standard / npm_proxy / combined / apache_common / apache_combined / apache_vhost_combined
 STATE_DIR="/etc/swiftban/state"           # 状态目录（封禁列表/日志/白名单）
 ```
 
-支持 NPM standard、NPM proxy 和 Nginx 默认 combined。auto 逐行识别，允许目录内混合格式；显式指定格式时，其他格式的记录会被跳过。NPM proxy 读取最终响应状态，支持缓存状态、缺失上游及多次上游重试。引号内的伪造客户端标记不会被视为真实 IP。
+支持 NPM standard/proxy、Nginx/Apache combined、Apache common 和 Apache 虚拟主机 combined（行首 `%v` 或 `%v:%p`）。`auto` 逐行识别，允许目录内混合格式；显式指定格式时，其他格式的记录会被跳过。Apache combined 与 Nginx combined 结构相同，显式 `apache_combined` 与 `combined` 都会接受此结构，无法仅凭日志行判断其服务器来源。NPM proxy 读取最终响应状态，支持缓存状态、缺失上游及多次上游重试。引号内的伪造客户端标记不会被视为真实 IP。
+
+Apache common 不记录 UA 和 Referer；这类事件不参与依赖 UA/Referer 的规则，也不会被算作空 UA，但仍参与 IP、URI、状态码和频率检测。为提取可封禁客户端地址，`%h` 必须输出数字 IPv4/IPv6；开启 Apache `HostnameLookups` 后输出的主机名会作为格式错误记录跳过。Debian/Ubuntu 的 `other_vhosts_access.log` 可直接放在 `LOG_DIR` 第一层。
 
 只扫描目录第一层最近3分钟内修改过的普通文件（`find -mmin -3`）：活动文件 `*access.log`、数字轮转后缀（如 `access.log.1`）、日期后缀（如 `access.log-20261116`、`access.log.2026-11-16`）。不读取 gzip、任意自定义格式、JSON 或 syslog，也不递归扫描子目录。文件修改时间只用于预筛选，入选文件仍按日志条目时间及 WINDOW 过滤。即使条目仍在 WINDOW 内，文件超过3分钟未修改也不参与本轮统计；增大 WINDOW 不会扩大文件修改时间范围。
 
@@ -47,7 +49,7 @@ WINDOW=7200    # 正整数秒；按日志中的时区偏移换算为 UTC
 | `LIMIT_EMPTYUA` | 20 | 空 UA 次数 |
 | `LIMIT_HIGHFREQ` | 500 | 高频观察（仅记录，不封禁） |
 
-> 单接口分组保留查询参数，例如 `/api?a=1` 和 `/api?a=2` 分开统计。NPM 域名转为小写；combined 没有域名字段，使用日志家族的文件标识隔离站点。同一个 combined 文件包含多个站点时无法进一步区分。
+> 单接口分组保留查询参数，例如 `/api?a=1` 和 `/api?a=2` 分开统计。NPM 和 Apache vhost combined 域名转为小写；普通 combined 没有域名字段，使用日志家族的文件标识隔离站点。同一个 combined 文件包含多个站点时无法进一步区分。
 
 > 阈值调整建议：先执行 dry-run，检查格式错误数量及候选记录，再根据实际流量调整。
 
@@ -146,7 +148,7 @@ swiftban list --dry-run     # 复核运行 ID、输入范围、配置摘要、�
 
 `--dry-run` 只作用于本次命令，既不修改全局模式，也不改变已有定时任务。安装器和默认 systemd 示例配置的是正式 `run`；如需周期演练，必须在任务中明确使用 `run --dry-run`。
 
-升级前请使用目标 NPM/Nginx 版本的脱敏日志验证所有实际格式，检查格式错误计数及候选 IP。合成样例测试通过不能替代生产日志验收；已有封禁不会自动清除，阈值不会自动调整。
+升级前请使用目标 NPM/Nginx/Apache 版本的脱敏日志验证所有实际格式，检查格式错误计数及候选 IP。合成样例测试通过不能替代生产日志验收；已有封禁不会自动清除，阈值不会自动调整。
 
 ## 九、启停与恢复
 

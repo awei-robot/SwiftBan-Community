@@ -195,7 +195,7 @@ cmd_list_ip() (
         case "$unit" in m) WINDOW=$((amount*60));; h) WINDOW=$((amount*3600));; d) WINDOW=$((amount*86400));; esac
     fi
     [[ -d "$LOG_DIR" && -r "$LOG_DIR" && -x "$LOG_DIR" ]] || { echo "错误: 日志目录不可读取: $LOG_DIR" >&2; return 1; }
-    case "$LOG_FORMAT" in auto|npm_standard|npm_proxy|combined) ;; *) echo "错误: 不支持的 LOG_FORMAT" >&2; return 1;; esac
+    case "$LOG_FORMAT" in auto|npm_standard|npm_proxy|combined|apache_common|apache_combined|apache_vhost_combined) ;; *) echo "错误: 不支持的 LOG_FORMAT" >&2; return 1;; esac
     # shellcheck disable=SC2034 # det_parse 读取查询时点
     NOW_EPOCH=$(date -u +%s)
     wd=$(mktemp -d) || return 1

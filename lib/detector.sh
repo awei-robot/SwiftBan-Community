@@ -113,7 +113,7 @@ det_awk() {
 det_check_config() {
     local name value
     case "$LOG_FORMAT" in
-        auto|npm_standard|npm_proxy|combined) ;;
+        auto|npm_standard|npm_proxy|combined|apache_common|apache_combined|apache_vhost_combined) ;;
         *) log_error "不支持的 LOG_FORMAT: $LOG_FORMAT"; return 1 ;;
     esac
     for name in WINDOW BAN_TTL LIMIT_444 LIMIT_SCAN LIMIT_EVILPATH LIMIT_PAYLOAD LIMIT_UA LIMIT_AUTH LIMIT_API LIMIT_API_RATE LIMIT_EMPTYUA LIMIT_HIGHFREQ WATCH_RETENTION_DAYS; do
@@ -233,7 +233,7 @@ det_parse() {
         return wall-(substr(zone,1,1)=="+" ? 1 : -1)*(h*3600+m*60)
     }
     function method(s) {return s=="-" || s~/^[A-Z]+$/}
-    function parse(s, family, n,i,j,k,up,a,num,detected) {
+    function parse(s, family, n,i,j,k,up,a,num,detected,vhost,request_parts) {
         n=tokens(s)
         if(!n) return 0
         if(kind[1]=="b") {
@@ -266,11 +266,39 @@ det_parse() {
             host=tolower(t[j+3]); uri=t[j+4]; ua=t[k]; ref=t[k+1]; stamp=t[1]
             if(kind[j+3]=="b") host="[" host "]"
             if(host=="" || host~/[[:space:]]/) return 0
+        } else if(n==7 && kind[1]=="w" && kind[2]=="w" && kind[3]=="w" &&
+                  kind[4]=="b" && kind[5]=="q" && kind[6]=="w" && kind[7]=="w" &&
+                  t[6]~/^[1-5][0-9]{2}$/ && t[7]~/^(-|[0-9]+)$/) {
+            detected="apache_common"
+            ip=t[1]; stamp=t[4]; status=t[6]; host="@file:" family
+            ua="__SWIFTBAN_NOT_LOGGED__"; ref="__SWIFTBAN_NOT_LOGGED__"
+            if(t[5]=="-") {verb="-"; uri="-"}
+            else {
+                num=split(t[5],request_parts," ")
+                if(num!=3 || !method(request_parts[1]) || request_parts[3]!~/^HTTP\/[0-9]+(\.[0-9]+)?$/) return 0
+                verb=request_parts[1]; uri=request_parts[2]
+            }
+        } else if(n>=10 && kind[1]=="w" && kind[2]=="w" &&
+                  kind[3]=="w" && kind[4]=="w" && kind[5]=="b" &&
+                  kind[6]=="q" && kind[7]=="w" && kind[8]=="w" &&
+                  kind[9]=="q" && kind[10]=="q" && validip(t[2]) &&
+                  t[7]~/^[1-5][0-9]{2}$/ && t[8]~/^(-|[0-9]+)$/) {
+            detected="apache_vhost_combined"
+            ip=t[2]; stamp=t[5]; status=t[7]; host=tolower(t[1])
+            sub(/:[0-9]+$/, "", host)
+            if(host=="" || host=="-") host="@file:" family
+            if(t[6]=="-") {verb="-"; uri="-"}
+            else {
+                num=split(t[6],request_parts," ")
+                if(num!=3 || !method(request_parts[1]) || request_parts[3]!~/^HTTP\/[0-9]+(\.[0-9]+)?$/) return 0
+                verb=request_parts[1]; uri=request_parts[2]
+            }
+            ref=t[9]; ua=t[10]
         } else {
             detected="combined"
             if(n<9 || kind[1]!="w" || kind[2]!="w" || kind[3]!="w" ||
                kind[4]!="b" || kind[5]!="q" || kind[6]!="w" ||
-               t[6]!~/^[1-5][0-9]{2}$/ || t[7]!~/^[0-9]+$/ ||
+               t[6]!~/^[1-5][0-9]{2}$/ || t[7]!~/^(-|[0-9]+)$/ ||
                kind[7]!="w" || kind[8]!="q" || kind[9]!="q") return 0
             ip=t[1]; stamp=t[4]; status=t[6]; host="@file:" family
             ua=t[9]; ref=t[8]
@@ -281,7 +309,7 @@ det_parse() {
                 verb=a[1]; uri=a[2]
             }
         }
-        if(fmt!="auto" && fmt!=detected) return 0
+        if(fmt!="auto" && fmt!=detected && !(fmt=="apache_combined" && detected=="combined")) return 0
         ip=ip_canon(ip)
         if(ip=="" || uri=="" || uri~/[[:space:]]/) return 0
         epoch=timestamp(stamp)
@@ -472,14 +500,15 @@ det_detect_all() {
         if(!git && lowpath ~ tolower(ENVIRON["EVIL_PATH"])) count("evilpath",ip)
         payload=tolower(ENVIRON["EVIL_PAYLOAD"])
         if(!git && host!="git.43tc.cn" &&
-           (tolower(uri) ~ payload || tolower(ua) ~ payload || tolower(ref) ~ payload)) count("payload",ip)
-        if(tolower(ua) ~ tolower(ENVIRON["EVIL_UA"])) count("ua",ip)
+           (tolower(uri) ~ payload || (ua!="__SWIFTBAN_NOT_LOGGED__" && tolower(ua) ~ payload) ||
+            (ref!="__SWIFTBAN_NOT_LOGGED__" && tolower(ref) ~ payload))) count("payload",ip)
+        if(ua!="__SWIFTBAN_NOT_LOGGED__" && tolower(ua) ~ tolower(ENVIRON["EVIL_UA"])) count("ua",ip)
         if((status=="401" || status=="403") && lowpath ~ tolower(ENVIRON["LOGIN_PATH"])) count("auth",ip)
         # 长度前缀避免域名、文件路径或 URI 中的分隔字符造成键碰撞。
         endpoint=length(host) ":" host uri
         count("api",ip " " endpoint)
         count("apirate",int($1/60) "|" ip "|" endpoint)
-        if(ua=="" || ua=="-") count("emptyua",ip)
+        if(ua!="__SWIFTBAN_NOT_LOGGED__" && (ua=="" || ua=="-")) count("emptyua",ip)
         count("freq",ip)
     }
     END {
