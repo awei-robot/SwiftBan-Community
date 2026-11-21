@@ -358,7 +358,7 @@ rt_worker() {
 }
 
 rt_execute() (
-    local mode="$1" action="$2" id child dir code i state
+    local mode="$1" action="$2" id child dir code i state last_id last_result
     set +m
     [[ "$mode" == dry-run ]] || rt_require_root || return 1
     rt_init || return 1
@@ -436,7 +436,10 @@ rt_execute() (
         return 1
     fi
     rt_finish "$id" "$code" || code=1
-    [[ ! -f "$dir/cancelled" ]] || code=0
+    if [[ -f "$dir/cancelled" ]] || {
+        IFS=$'\t' read -r last_id _ _ _ last_result _ < "$STATE_DIR/last-run.tsv" 2>/dev/null &&
+            [[ "$last_id" == "$id" && "$last_result" == stopped ]]
+    }; then code=0; fi
     rt_cleanup_run "$id" || code=1
     rm -rf "$dir"
     return "$code"
