@@ -5,31 +5,42 @@ det_scan_state_path() {
     printf '%s/scan/state.tsv\n' "$STATE_DIR"
 }
 
-# Input records: source<TAB>family<TAB>event-id<TAB>file-generation<TAB>raw-line
-det_scan_collect() (
-    local wd="$1" state file base family suffix identity generation offset last_line_offset fingerprint
-    local size mtime now after_identity after_size raw chunk seen="|" bytes stored_fingerprint
-    local cursor_file="$wd/cursors.pending" state_file
-    state_file=$(det_scan_state_path) || return 1
-    umask 077
-    mkdir -p "$STATE_DIR/scan" || return 1
-    chmod 700 "$STATE_DIR/scan" || return 1
-    if [[ -f "$state_file" ]] && ! awk -F '\t' '
+det_scan_validate_state() {
+    local file="$1" output="$2"
+    awk -F '\t' -v OFS='\t' '
         $1=="C" {
             if(NF!=8 || $2!~/^[0-9]+:[0-9]+$/ || $3!~/^[0-9]+$/ ||
                $4!~/^[0-9]+$/ || $5!~/^[0-9]+$/ || $7!~/^[0-9]+$/ ||
                !(($4==0 && $7==0 && $8=="") || ($7<$4 && $8~/^[0-9]+ [0-9]+$/))) bad=1
+            else cursors++
             next
         }
         $1=="E" {
             if(NF!=14 || $2!~/^[0-9]+$/ ||
                $11!~/^[0-9]+:[0-9]+:[0-9]+:[0-9]+$/ ||
                $12!~/^[0-9]+:[0-9]+:[0-9]+$/) bad=1
+            else events++
             next
         }
         {bad=1}
-        END {exit bad}
-    ' "$state_file"; then
+        END {
+            if(!bad) print "ok",cursors+0,events+0
+            exit bad
+        }
+    ' "$file" > "$output"
+}
+
+# Input records: source<TAB>family<TAB>event-id<TAB>file-generation<TAB>raw-line
+det_scan_collect() (
+    local wd="$1" state file base family suffix identity generation offset last_line_offset fingerprint
+    local size mtime now after_identity after_size raw chunk seen="|" bytes stored_fingerprint
+    local file_started='' file_elapsed=0 file_start_offset=0 file_lines=0 file_bytes=0
+    local cursor_file="$wd/cursors.pending" state_file
+    state_file=$(det_scan_state_path) || return 1
+    umask 077
+    mkdir -p "$STATE_DIR/scan" || return 1
+    chmod 700 "$STATE_DIR/scan" || return 1
+    if [[ -f "$state_file" ]] && ! det_scan_validate_state "$state_file" "$wd/state-counts"; then
         log_error "扫描状态损坏，未推进日志游标: $state_file"
         return 1
     fi
@@ -100,6 +111,12 @@ det_scan_collect() (
             if (( now - mtime > 180 )); then continue; fi
         fi
 
+        file_start_offset="$offset"
+        file_lines=0
+        file_started=""
+        if [[ "${RT_METRICS_ENABLED:-0}" == 1 ]] && declare -F rt_clock_cs >/dev/null && rt_clock_cs; then
+            file_started="$REPLY"
+        fi
         printf '%s\n' "$file" >> "$wd/files" || return 1
         if (( size > offset )); then
             chunk="$wd/chunk"
@@ -114,6 +131,7 @@ det_scan_collect() (
                     "$file" "$family" "$identity" "$generation" "$offset" \
                     "$identity" "$generation" "$raw" >> "$wd/input.tsv" || return 1
                 offset=$((offset + bytes))
+                file_lines=$((file_lines + 1))
             done < "$chunk"
             rm -f "$chunk"
         fi
@@ -128,6 +146,11 @@ det_scan_collect() (
         fi
         printf 'C\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$identity" "$generation" "$offset" "$now" "$family" \
             "$last_line_offset" "$fingerprint" >> "$cursor_file" || return 1
+        if [[ -n "$file_started" ]] && rt_clock_cs; then
+            file_elapsed=$((REPLY-file_started)); (( file_elapsed >= 0 )) || file_elapsed=0
+            file_bytes=$((offset-file_start_offset)); (( file_bytes >= 0 )) || file_bytes=0
+            rt_metrics_file "$file" "$file_elapsed" "$file_bytes" "$file_lines"
+        fi
     done < "$wd/all-files"
 
     # Carry forward cursor rows for files temporarily absent during rotation.

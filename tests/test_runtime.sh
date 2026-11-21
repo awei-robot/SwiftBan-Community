@@ -52,6 +52,11 @@ ok() { PASS=$((PASS+1)); echo "  ✓ $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  ✗ $1"; cat "$T/latest.out" 2>/dev/null || true; }
 check() { local label="$1"; shift; if "$@"; then ok "$label"; else bad "$label"; fi; }
 cli() { bash "$CLI" "$@" > "$T/latest.out" 2>&1; }
+run_metric() {
+    local run_id
+    run_id=$(awk -F '\t' '{print $1}' "$STATE/last-run.tsv") || return 1
+    find "$STATE/scan/metrics" -type f -name "$run_id.tsv" -print -quit
+}
 new_case() {
     local name="$1"
     export FAKE_FW_DIR="$T/$name/firewall"
@@ -108,9 +113,14 @@ sample
 cli run --dry-run
 check "演练保存独立候选" grep -q $'198.51.100.10\t可疑UA\t5\t5' "$STATE/dry-run.tsv"
 check "演练不写真实banlist" test ! -s "$STATE/banlist.txt"
+metric=$(run_metric)
+check "成功扫描原子保存0600指标文件" bash -c '[[ -f "$1" && "$(stat -c %a "$1")" == 600 ]]' _ "$metric"
+check "指标包含各阶段及逐文件耗时" bash -c 'awk -F "\t" '\''$1=="P"&&$2=="collecting"{c=1}$1=="P"&&$2=="parsing"{p=1}$1=="P"&&$2=="publishing"{u=1}$1=="F"{f=1}END{exit !(c&&p&&u&&f)}'\'' "$1"' _ "$metric"
+check "指标记录读取行数和窗口事件" bash -c 'awk -F "\t" '\''$1=="C"&&$2=="lines_read"&&$3==5{l=1}$1=="C"&&$2=="window_events"&&$3==5{e=1}END{exit !(l&&e)}'\'' "$1"' _ "$metric"
 check "演练无防火墙写操作" bash -c '! grep -Eq "\"-I\"|\"-D\"" "$1"' _ "$FAKE_FW_DIR/calls.jsonl"
 cli status
 check "status显示最近演练和空闲" grep -q '最近执行: dry-run' "$T/latest.out"
+check "status显示最近扫描耗时和处理量" grep -q '最近扫描耗时: .*文件=.*读取=' "$T/latest.out"
 check "status显示独立定时配置" grep -q 'cron 推断模式: 演练' "$T/latest.out"
 check "status显示systemd配置" grep -q 'ActiveState=active' "$T/latest.out"
 printf '* * * * * echo swiftban run --dry-run; touch %s\n' "$T/must-not-execute" > "$FAKE_FW_DIR/cron"
@@ -123,10 +133,32 @@ before=$(cksum "$STATE/dry-run.tsv")
 printf '\nLOG_DIR="%s"\n' "$T/missing" >> "$SWIFTBAN_CONF"
 if cli run --dry-run; then bad "失败演练应返回非零"; else ok "失败演练返回非零"; fi
 check "失败保留上次完整结果" test "$(cksum "$STATE/dry-run.tsv")" = "$before"
+metric=$(run_metric)
+check "失败扫描保存失败阶段部分耗时" bash -c 'awk -F "\t" '\''$1=="M"&&$5=="failed"{f=1}$1=="P"&&$2=="collecting"{p=1}END{exit !(f&&p)}'\'' "$1"' _ "$metric"
 printf '\nLOG_DIR="%s"\n' "$LOGS" >> "$SWIFTBAN_CONF"
 : > "$LOGS/site_access.log"
 cli run --dry-run
 check "零候选覆盖旧演练结果并保留复核元数据" bash -c 'grep -q "^# run_id[[:space:]]" "$1" && grep -q "^# thresholds[[:space:]]" "$1" && ! grep -q "^[0-9]" "$1"' _ "$STATE/dry-run.tsv"
+metric=$(run_metric)
+metric_before=$(cksum "$metric" "$STATE/scan/state.tsv")
+cli doctor
+check "doctor展示历史趋势、阶段详情和状态快照" bash -c 'grep -q "30天扫描记录:" "$1" && grep -q "总耗时分位数: P50=.*P95=" "$1" && grep -q "最近扫描阶段耗时" "$1" && grep -q "扫描快照: 游标=" "$1"' _ "$T/latest.out"
+check "doctor不修改指标和扫描快照" test "$(cksum "$metric" "$STATE/scan/state.tsv")" = "$metric_before"
+old_day=$(date -u -d '31 days ago' '+%F')
+mkdir -p "$STATE/scan/metrics/$old_day"
+chmod 700 "$STATE/scan/metrics/$old_day"
+old_id=$(cat /proc/sys/kernel/random/uuid)
+printf '# swiftban-scan-metrics-v1\nM\t1\t%s\tdry-run\tcompleted\t1\t2\t10000\tv-test\n' "$old_id" > "$STATE/scan/metrics/$old_day/$old_id.tsv"
+chmod 600 "$STATE/scan/metrics/$old_day/$old_id.tsv"
+cli doctor
+check "doctor统计排除保留期外的旧指标" grep -q '30天扫描记录: 3 |' "$T/latest.out"
+check "doctor只提示旧指标待清理" grep -q '超出30天的指标目录待清理' "$T/latest.out"
+cp "$STATE/scan/state.tsv" "$T/state.backup"
+printf 'invalid state row\n' >> "$STATE/scan/state.tsv"
+damaged_snapshot=$(cksum "$STATE/scan/state.tsv")
+if cli doctor; then bad "doctor应报告损坏的扫描快照"; else ok "doctor报告损坏的扫描快照"; fi
+check "doctor诊断损坏快照但不修改它" bash -c 'grep -q "扫描快照结构损坏" "$1" && [[ "$(cksum "$2/scan/state.tsv")" == "$3" ]]' _ "$T/latest.out" "$STATE" "$damaged_snapshot"
+mv "$T/state.backup" "$STATE/scan/state.tsv"
 
 new_case stop
 now=$(date -u +%s)
@@ -221,10 +253,15 @@ EOF
     child=$(cat "$STATE/child-pid")
     cli status
     check "$stage 阶段状态准确" grep -q "阶段=$stage" "$T/latest.out"
+    check "$stage 阶段显示动态耗时" grep -Eq "阶段=$stage（已运行 [0-9]+\\.[0-9]{2}s）" "$T/latest.out"
     cli stop
     wait "$supervisor"
     check "$stage 阶段停止后子进程退出" not_live "$child"
     check "$stage 阶段停止不改变banlist" test ! -s "$STATE/banlist.txt"
+    if [[ "$stage" == parsing ]]; then
+        metric=$(run_metric)
+        check "stop中断保留部分阶段耗时并标记停止" bash -c 'awk -F "\t" '\''$1=="M"&&$5=="stopped"{s=1}$1=="P"&&$2=="parsing"{p=1}END{exit !(s&&p)}'\'' "$1"' _ "$metric"
+    fi
 done
 
 new_case dry_cancel

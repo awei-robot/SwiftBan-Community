@@ -152,7 +152,7 @@ swiftban install-cron      # 安装每分钟执行 cron（或使用 systemd time
 
 `stop` 保留定时任务，但通过持久停止标记跳过后续正式检测，服务器重启后也不会自动解除停止。停止期间 TTL 继续计时；`start` 仅恢复未到期、非白名单记录，永久封禁照常恢复。停止时仍允许显式演练和手动解封，禁止手动新增封禁。撤销失败时会明确显示“停止未完成”，修复问题后重试 `stop`，不能直接 `start`。
 
-演练候选原子保存为 `${STATE_DIR}/dry-run.tsv`，不进入 `banlist.txt`；失败或中断保留上一次完整结果，成功的零候选结果也会更新文件。`status` 分别报告“控制状态”“当前执行”“最近执行”“定时配置”，最近一次演练不代表已配置的正式任务也处于演练模式。
+演练候选原子保存为 `${STATE_DIR}/dry-run.tsv`，不进入 `banlist.txt`；失败或中断保留上一次完整结果，成功的零候选结果也会更新文件。`status` 分别报告“控制状态”“当前执行”“最近执行”“定时配置”，运行中显示当前阶段已耗时，空闲时显示最近扫描总耗时和处理量。`doctor` 另提供最近30天耗时分位数、阶段耗时、最慢10个日志文件和增量快照结构诊断。耗时采用 Linux 单调时钟；指标保存在 `${STATE_DIR}/scan/metrics/`，目录和文件仅所有者可读，保留30天。失败和停止的扫描也保存已完成阶段耗时；旧版运行记录不补生成指标。诊断只读状态，不自动修复损坏快照。最近一次演练不代表已配置的正式任务也处于演练模式。
 
 ## 📊 版本对比
 
@@ -195,12 +195,15 @@ banlist.txt 持久化 / TTL 自动解封 / 规则自动恢复
 
 ```bash
 bash tests/test_detector.sh     # 白名单、格式/时区、字段边界、轮转、决策和故障回归
+bash tests/test_log_fixtures.sh # 自编六种格式夹具、字段黄金结果、候选与WATCH验收
 bash tests/test_maintenance.sh  # IPv6规范化、状态读写失败、严格配置和cron安装回归
 shellcheck bin/swiftban.sh lib/*.sh tests/test*.sh install/install.sh
 bash tests/test_runtime.sh      # Linux真实进程会话/锁测试，防火墙与调度使用替身
 ```
 
 macOS 测试会优先使用 gawk；awk 缺少 mktime 或区间正则支持时测试失败，不会跳过时间解析检查。测试中的防火墙操作均使用 mock。
+
+格式夹具与验收覆盖见 [日志格式验收](docs/log-format-acceptance.md)。夹具均为自编固定样例，不替代目标环境脱敏日志的上线前 dry-run。
 
 运行管理集成测试需要 Linux，macOS 只运行可移植回归及静态检查。Python 3 仅用于测试防火墙替身，不是程序运行时依赖。
 

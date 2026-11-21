@@ -38,6 +38,7 @@ det_ban() {
         log_error "封禁状态写入失败: $ip"
         return 1
     fi
+    if declare -F rt_metrics_inc >/dev/null; then rt_metrics_inc new_bans; fi
     log_action "BAN $ip | ttl=${BAN_TTL}s | $reason"
 }
 
@@ -402,6 +403,13 @@ det_run() (
         log_error "日志收集失败，本轮停止新增封禁"
         return 1
     fi
+    if declare -F rt_metrics_fact >/dev/null; then
+        rt_metrics_fact files "$(wc -l < "$workdir/files" | tr -d ' ')"
+        rt_metrics_fact lines_read "$(wc -l < "$workdir/input.tsv" | tr -d ' ')"
+        if [[ -n "${RT_RUN_DIR:-}" && -r "$RT_RUN_DIR/files.tsv" ]]; then
+            rt_metrics_fact bytes_read "$(awk -F '\t' '{n+=$4} END {print n+0}' "$RT_RUN_DIR/files.tsv")"
+        else rt_metrics_fact bytes_read 0; fi
+    fi
     : > "$workdir/stats.tsv" || return 1
     : > "$workdir/future.tsv" || return 1
     det_phase parsing || return 1
@@ -416,6 +424,12 @@ det_run() (
     if ! det_scan_prepare "$workdir"; then
         log_error "扫描事件状态合并失败，本轮停止新增封禁"
         return 1
+    fi
+    if declare -F rt_metrics_fact >/dev/null; then
+        awk -F '\t' '{v+=$2;i+=$3;e+=$4;f+=$5;d+=$6} END {
+            printf "valid\t%d\ninvalid\t%d\nexpired\t%d\nfuture\t%d\nduplicate\t%d\n",v,i,e,f,d
+        }' "$workdir/stats.tsv" | while IFS=$'\t' read -r key value; do rt_metrics_fact "$key" "$value"; done
+        rt_metrics_fact window_events "$(wc -l < "$workdir/recent.log" | tr -d ' ')"
     fi
     while IFS=$'\t' read -r source valid invalid expired future duplicate; do
         log_info "日志解析 $source | 有效=$valid 格式错误=$invalid 过期=$expired 未来=$future 重复=$duplicate"
@@ -437,6 +451,9 @@ det_run() (
         candidates="$workdir/candidates.tsv"
         : > "$candidates" || return 1
         det_decide "$workdir" dry "$candidates" || return 1
+        if declare -F rt_metrics_fact >/dev/null; then
+            rt_metrics_fact candidates "$(wc -l < "$candidates" | tr -d ' ')"
+        fi
         dry_tmp=$(mktemp "$STATE_DIR/.dry-run-${RT_RUN_ID:-standalone}.XXXXXX") || return 1
         {
             printf '# mode\tdry-run\n# run_id\t%s\n' "${RT_RUN_ID:-standalone}"
@@ -462,7 +479,13 @@ det_run() (
     else
         if declare -F rt_may_enforce >/dev/null; then rt_may_enforce || return 1; fi
         det_decide "$workdir" || return 1
+        if declare -F rt_metrics_fact >/dev/null; then
+            if [[ -n "${RT_RUN_DIR:-}" && -r "$RT_RUN_DIR/facts.tsv" ]]; then
+                rt_metrics_fact candidates "$(awk -F '\t' '$2=="new_bans" {n=$3} END {print n+0}' "$RT_RUN_DIR/facts.tsv")"
+            else rt_metrics_fact candidates 0; fi
+        fi
     fi
+    det_phase publishing || return 1
     if ! watch_publish "$( [[ "$dry_run" == 1 ]] && echo dry-run || echo formal )" "$WATCH_PENDING" "$WATCH_EVENTS"; then
         log_error "WATCH 保存失败，本轮观察结果未完整保存"
         return 1

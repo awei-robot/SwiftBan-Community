@@ -1,0 +1,2 @@
+1795262340|198.51.100.50|200|GET|@file:/fixtures/apache_combined.log|/apache-combined|Mozilla/5.0|-
+1795262350|198.51.100.51|200|GET|@file:/fixtures/apache_combined.log|/escaped|Agent/1.0 with \"quoted\" text|https://example.test/

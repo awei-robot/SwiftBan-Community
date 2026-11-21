@@ -71,6 +71,125 @@ rt_proc() {
     (( ${#RT_PROC[@]} >= 20 ))
 }
 
+# /proc/uptime is monotonic and available on every supported Linux host.
+# Store centiseconds to avoid sub-second scans appearing to take zero time.
+rt_clock_cs() {
+    local uptime seconds fraction
+    IFS=' ' read -r uptime _ < /proc/uptime || return 1
+    [[ "$uptime" =~ ^([0-9]+)\.([0-9]+)$ ]] || return 1
+    seconds="${BASH_REMATCH[1]}"
+    fraction="${BASH_REMATCH[2]}00"
+    fraction="${fraction:0:2}"
+    REPLY=$((10#$seconds * 100 + 10#$fraction))
+}
+
+rt_metrics_init() {
+    local dir="$STATE_DIR/.run-$RT_RUN_ID" tick wall
+    rt_clock_cs || return 1
+    tick="$REPLY"
+    wall=$(date -u +%s) || return 1
+    : > "$dir/phases.tsv" && : > "$dir/files.tsv" && : > "$dir/facts.tsv" || return 1
+    printf 'M\t1\t%s\t%s\t%s\t%s\tpending\t0\t0\n' \
+        "$RT_RUN_ID" "$RT_MODE" "$wall" "$tick" > "$dir/metrics.tsv" || return 1
+}
+
+rt_metrics_fact() {
+    [[ "${RT_METRICS_ENABLED:-0}" == 1 && -n "${RT_RUN_DIR:-}" && -n "${RT_RUN_ID:-}" ]] || return 0
+    [[ "$1" =~ ^[a-z_]+$ && "$2" != *$'\t'* && "$2" != *$'\n'* ]] || return 0
+    printf 'C\t%s\t%s\n' "$1" "$2" >> "$RT_RUN_DIR/facts.tsv" ||
+        log_warn "扫描指标更新失败: $1"
+    return 0
+}
+
+rt_metrics_inc() {
+    local key="$1" value=0
+    [[ "${RT_METRICS_ENABLED:-0}" == 1 && -n "${RT_RUN_DIR:-}" && -n "${RT_RUN_ID:-}" ]] || return 0
+    value=$(awk -F '\t' -v key="$key" '$1=="C" && $2==key {v=$3} END {print v+0}' \
+        "$RT_RUN_DIR/facts.tsv" 2>/dev/null) || return 1
+    rt_metrics_fact "$key" "$((value + ${2:-1}))"
+}
+
+rt_metrics_file() {
+    [[ "${RT_METRICS_ENABLED:-0}" == 1 && -n "${RT_RUN_DIR:-}" && -n "${RT_RUN_ID:-}" ]] || return 0
+    local path="$1" elapsed="$2" bytes="$3" lines="$4"
+    [[ "$path" != *$'\t'* && "$path" != *$'\n'* && "$elapsed" =~ ^[0-9]+$ &&
+       "$bytes" =~ ^[0-9]+$ && "$lines" =~ ^[0-9]+$ ]] || return 1
+    printf 'F\t%s\t%s\t%s\t%s\n' "$path" "$elapsed" "$bytes" "$lines" \
+        >> "$RT_RUN_DIR/files.tsv" || log_warn "单文件扫描耗时记录失败: $path"
+    return 0
+}
+
+rt_metrics_close_phase() {
+    local run_dir="$1" now phase started wall elapsed
+    [[ -r "$run_dir/phase-clock" ]] || return 0
+    IFS=$'\t' read -r phase started wall < "$run_dir/phase-clock" || return 1
+    [[ "$phase" =~ ^[a-z-]+$ && "$started" =~ ^[0-9]+$ ]] || return 1
+    rt_clock_cs || return 1
+    now="$REPLY"
+    elapsed=$((now-started))
+    (( elapsed >= 0 )) || elapsed=0
+    printf 'P\t%s\t%s\n' "$phase" "$elapsed" >> "$run_dir/phases.tsv"
+}
+
+rt_metrics_path() {
+    local run_id="$1" file
+    [[ "$run_id" =~ ^[0-9a-f-]{36}$ ]] || return 1
+    for file in "$STATE_DIR"/scan/metrics/????-??-??/"$run_id".tsv; do
+        [[ -f "$file" ]] && { printf '%s\n' "$file"; return 0; }
+    done
+    return 1
+}
+
+# Publish a compact, versioned run record plus the ten slowest files. The
+# record is diagnostic only: its failure never changes the scan result.
+rt_metrics_publish() (
+    local run_id="$1" mode="$2" result="$3" started_epoch="$4"
+    local run_dir="$STATE_DIR/.run-$run_id" finish_epoch finish_cs start_cs duration day root tmp
+    [[ -r "$run_dir/metrics.tsv" ]] || return 0
+    if rt_metrics_path "$run_id" >/dev/null 2>&1; then return 0; fi
+    IFS=$'\t' read -r _ _ _ _ _ start_cs _ _ _ < "$run_dir/metrics.tsv" || return 1
+    [[ "$start_cs" =~ ^[0-9]+$ ]] || return 1
+    rt_metrics_close_phase "$run_dir" || return 1
+    if [[ -r "$run_dir/result" ]] && IFS=$'\t' read -r _ finish_epoch finish_cs < "$run_dir/result" &&
+        [[ "$finish_epoch" =~ ^[0-9]+$ && "$finish_cs" =~ ^[0-9]+$ ]]; then :
+    else
+        rt_clock_cs || return 1
+        finish_cs="$REPLY"
+        finish_epoch=$(date -u +%s) || return 1
+    fi
+    duration=$((finish_cs-start_cs)); (( duration >= 0 )) || duration=0
+    day=$(date -u -d "@$finish_epoch" '+%F') || return 1
+    root="$STATE_DIR/scan/metrics/$day"
+    umask 077
+    mkdir -p "$root" || return 1
+    chmod 700 "$STATE_DIR/scan" "$STATE_DIR/scan/metrics" "$root" || return 1
+    tmp=$(mktemp "$root/.${run_id}.XXXXXX") || return 1
+    {
+        printf '# swiftban-scan-metrics-v1\n'
+        printf 'M\t1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$run_id" "$mode" "$result" "$started_epoch" "$finish_epoch" "$duration" \
+            "${SWIFTBAN_VERSION:-unknown}"
+        [[ ! -s "$run_dir/phases.tsv" ]] || cat "$run_dir/phases.tsv"
+        if [[ -s "$run_dir/facts.tsv" ]]; then
+            awk -F '\t' -v OFS='\t' '{facts[$2]=$3} END {for(k in facts) print "C",k,facts[k]}' \
+                "$run_dir/facts.tsv" | LC_ALL=C sort -t $'\t' -k2,2
+        fi
+        if [[ -s "$run_dir/files.tsv" ]]; then
+            LC_ALL=C sort -t $'\t' -k3,3nr -k2,2 "$run_dir/files.tsv" |
+                sed -n '1,10p'
+        fi
+    } > "$tmp" || { rm -f "$tmp"; return 1; }
+    if chmod 600 "$tmp" && mv "$tmp" "$root/$run_id.tsv"; then :
+    else rm -f "$tmp"; return 1; fi
+    # Keep the most recent 30 UTC days; date directory names sort lexically.
+    local cutoff old
+    cutoff=$(date -u -d "@$((finish_epoch-30*86400))" '+%F') || return 1
+    for old in "$STATE_DIR"/scan/metrics/????-??-??; do
+        [[ -d "$old" ]] || continue
+        [[ "${old##*/}" < "$cutoff" ]] && rm -rf "$old"
+    done
+)
+
 # 返回 0=同一会话仍有存活成员，1=已退出，2=身份不可信。忽略僵尸进程。
 rt_group_state() {
     local boot path
@@ -117,7 +236,21 @@ rt_scan_busy() (
 
 rt_phase() {
     [[ -n "${RT_RUN_DIR:-}" ]] || return 0
-    rt_record "$RT_RUN_DIR/phase" "$1"
+    if [[ -r "$RT_RUN_DIR/phase-clock" ]]; then
+        rt_metrics_close_phase "$RT_RUN_DIR" || log_warn "阶段耗时记录失败: $1"
+    fi
+    rt_record "$RT_RUN_DIR/phase" "$1" || return 1
+    if [[ "${RT_METRICS_ENABLED:-0}" == 1 ]]; then
+        local tick wall
+        if rt_clock_cs; then
+            tick="$REPLY"
+            if wall=$(date -u +%s); then
+                rt_record "$RT_RUN_DIR/phase-clock" "$1" "$tick" "$wall" ||
+                    log_warn "阶段计时起点保存失败: $1"
+            else log_warn "无法读取UTC时间，跳过阶段计时起点"; fi
+        else log_warn "无法读取单调时钟，跳过阶段计时起点"; fi
+    fi
+    return 0
 }
 
 rt_cleanup_run() {
@@ -146,6 +279,9 @@ rt_finish() (
     if rt_read_active && [[ "$RT_ID" == "$id" ]]; then
         if (( code >= 128 )); then result=interrupted
         elif (( code != 0 )); then result=failed; fi
+        if ! rt_metrics_publish "$id" "$RT_MODE" "$result" "$RT_STARTED"; then
+            log_warn "扫描耗时指标保存失败，不影响扫描结果"
+        fi
         rt_last "$result" "$code" || return 1
         rm -f "$STATE_DIR/active.tsv"
     fi
@@ -190,6 +326,8 @@ rt_worker() {
     rt_init || return 1
     RT_RUN_DIR="$STATE_DIR/.run-$RT_RUN_ID"
     [[ -d "$RT_RUN_DIR" && "$(readlink "/proc/$BASHPID/fd/8")" == "$STATE_DIR/.lock" ]] || return 1
+    if rt_metrics_init; then RT_METRICS_ENABLED=1
+    else RT_METRICS_ENABLED=0; log_warn "扫描耗时指标初始化失败，继续扫描"; fi
     rt_phase starting || return 1
     local uuid
     IFS= read -r uuid < "$STATE_DIR/.instance-id" || return 1
@@ -212,7 +350,10 @@ rt_worker() {
     else
         if det_run 1; then code=0; else code=$?; fi
     fi
-    rt_record "$RT_RUN_DIR/result" "$code" "$(date -u +%s)" || return 1
+    local finished_epoch finished_cs
+    finished_epoch=$(date -u +%s) || return 1
+    if rt_clock_cs; then finished_cs="$REPLY"; else finished_cs=0; fi
+    rt_record "$RT_RUN_DIR/result" "$code" "$finished_epoch" "$finished_cs" || return 1
     return "$code"
 }
 
@@ -238,7 +379,12 @@ rt_execute() (
             return 1
         fi
         # 上一协调进程异常退出，但锁已释放；将其标为失败，而非沿用运行中状态。
+        if ! rt_metrics_publish "$RT_ID" "$RT_MODE" interrupted "$RT_STARTED"; then
+            log_warn "上次扫描的部分耗时指标无法保存"
+        fi
         rt_last interrupted 1 || return 1
+        rt_cleanup_run "$RT_ID" || return 1
+        rm -rf "$STATE_DIR/.run-$RT_ID"
         rm -f "$STATE_DIR/active.tsv"
     fi
     IFS= read -r id < /proc/sys/kernel/random/uuid || return 1
@@ -297,12 +443,14 @@ rt_execute() (
 )
 
 rt_stop() (
-    local group_code=1 failed=0 id="" exit_code result busy=0
+    local group_code=1 failed=0 id="" exit_code result busy=0 mode="" started=""
     rt_require_root && rt_init && rt_control_lock || return 1
     rt_record "$STATE_DIR/stopped.tsv" stopping - || return 1
     if rt_scan_busy; then busy=1; fi
     if rt_read_active; then
         id="$RT_ID"
+        mode="$RT_MODE"
+        started="$RT_STARTED"
         if rt_group_state; then group_code=0; else group_code=$?; fi
         if (( group_code == 2 )); then
             log_error "进程身份不一致，拒绝发送信号"
@@ -326,15 +474,19 @@ rt_stop() (
             IFS=$'\t' read -r exit_code _ < "$STATE_DIR/.run-$id/result" || return 1
             result=completed
             [[ "$exit_code" == 0 ]] || result=failed
-            rt_last "$result" "$exit_code" || return 1
         elif [[ -d "$STATE_DIR/.run-$id" ]]; then
             rt_record "$STATE_DIR/.run-$id/cancelled" cancelled || return 1
-            rt_last stopped 0 || return 1
+            result=stopped; exit_code=0
         else
-            rt_last interrupted 1 || return 1
+            result=interrupted; exit_code=1
         fi
+        if [[ -n "$mode" && -n "$started" ]] && ! rt_metrics_publish "$id" "$mode" "$result" "$started"; then
+            log_warn "停止时的部分耗时指标保存失败"
+        fi
+        rt_last "$result" "$exit_code" || return 1
         rm -f "$STATE_DIR/active.tsv"
         rt_cleanup_run "$id" || return 1
+        rm -rf "$STATE_DIR/.run-$id"
     fi
     if ! fw_remove_managed; then
         rt_record "$STATE_DIR/stopped.tsv" cleanup_failed "$id"
@@ -437,8 +589,42 @@ rt_time_text() {
     else printf '未知'; fi
 }
 
+rt_seconds_text() {
+    local centiseconds="$1"
+    [[ "$centiseconds" =~ ^[0-9]+$ ]] || { printf '?'; return; }
+    printf '%d.%02d' "$((centiseconds/100))" "$((centiseconds%100))"
+}
+
+rt_metrics_status() {
+    local run_id="$1" file summary
+    if ! file=$(rt_metrics_path "$run_id" 2>/dev/null); then
+        printf '最近扫描耗时: 无指标记录（旧版本运行或记录保存失败）\n'
+        return 0
+    fi
+    summary=$(awk -F '\t' '
+        $1=="M" {mode=$4; result=$5; duration=$8}
+        $1=="C" {v[$2]=$3}
+        END {
+            printf "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d",mode,result,duration,
+                v["files"],v["bytes_read"],v["lines_read"],v["valid"],v["invalid"],v["window_events"],v["candidates"],
+                (v["files"]!="" ? 1 : 0)
+        }
+    ' "$file") || { printf '最近扫描耗时: 指标记录无法读取\n'; return 0; }
+    local mode result duration files bytes lines valid invalid events candidates has_counts
+    IFS=$'\t' read -r mode result duration files bytes lines valid invalid events candidates has_counts <<< "$summary"
+    [[ "$duration" =~ ^[0-9]+$ ]] || { printf '最近扫描耗时: 指标记录格式无效\n'; return 0; }
+    if [[ "$has_counts" != 1 ]]; then
+        printf '最近扫描耗时: %ss | 结果=%s | 处理量未完整统计\n' "$(rt_seconds_text "$duration")" "$result"
+        return 0
+    fi
+    printf '最近扫描耗时: %ss | 结果=%s | 文件=%s | 读取=%s字节/%s行 | 有效=%s 格式错误=%s | 窗口事件=%s 候选=%s\n' \
+        "$(rt_seconds_text "$duration")" "$result" "${files:-0}" "${bytes:-0}" "${lines:-0}" \
+        "${valid:-0}" "${invalid:-0}" "${events:-0}" "${candidates:-0}"
+}
+
 rt_show_status() {
     local state=- id mode started finished result code phase=unknown cnt records=0 stale=0 label
+    local phase_name phase_tick now_cs phase_elapsed
     if [[ -d "$STATE_DIR" && ( ! -r "$STATE_DIR" || ! -x "$STATE_DIR" ) ]]; then
         echo "控制及执行状态: 无法读取状态目录（权限不足）"
         return 0
@@ -460,7 +646,13 @@ rt_show_status() {
             if rt_read_active && rt_group_state; then
                 [[ ! -r "$STATE_DIR/.run-$RT_ID/phase" ]] ||
                     IFS= read -r phase < "$STATE_DIR/.run-$RT_ID/phase"
-                echo "当前执行: $(rt_mode_text "$RT_MODE") | PID=$RT_PID | 开始=$(rt_time_text "$RT_STARTED") | 阶段=$phase | 链=$RT_CHAIN"
+                if IFS=$'\t' read -r phase_name phase_tick _ < "$STATE_DIR/.run-$RT_ID/phase-clock" 2>/dev/null &&
+                    [[ "$phase_name" == "$phase" && "$phase_tick" =~ ^[0-9]+$ ]] && rt_clock_cs; then
+                    now_cs="$REPLY"; phase_elapsed=$((now_cs-phase_tick)); (( phase_elapsed >= 0 )) || phase_elapsed=0
+                    echo "当前执行: $(rt_mode_text "$RT_MODE") | PID=$RT_PID | 开始=$(rt_time_text "$RT_STARTED") | 阶段=$phase（已运行 $(rt_seconds_text "$phase_elapsed")s） | 链=$RT_CHAIN"
+                else
+                    echo "当前执行: $(rt_mode_text "$RT_MODE") | PID=$RT_PID | 开始=$(rt_time_text "$RT_STARTED") | 阶段=$phase | 链=$RT_CHAIN"
+                fi
             else echo "当前执行: 锁被占用，进程信息无法确认"; fi
         else
             local lock_code=$?
@@ -475,6 +667,7 @@ rt_show_status() {
     elif [[ -r "$STATE_DIR/last-run.tsv" ]] &&
         IFS=$'\t' read -r id mode started finished result code < "$STATE_DIR/last-run.tsv"; then
         echo "最近执行: $(rt_mode_text "$mode") | 开始=$(rt_time_text "$started") | 结束=$(rt_time_text "$finished") | 结果=$result | 退出码=$code"
+        rt_metrics_status "$id"
     else echo "最近执行: 无可读记录"; fi
     if [[ -r "$BANLIST" ]]; then records=$(wc -l < "$BANLIST"); fi
     watch_summary
@@ -563,6 +756,117 @@ rt_list_dry() {
     fi
 }
 
+rt_metrics_doctor() (
+    local root="$STATE_DIR/scan/metrics" tmp file mode result duration
+    local id metric count cutoff daydir invalid=0 state_cursors state_events
+    local -a files durations daydirs
+    printf '\n=== 扫描耗时与增量状态诊断 ===\n'
+    cutoff=$(date -u -d "@$(($(date -u +%s)-30*86400))" '+%F') || return 1
+    if [[ -d "$STATE_DIR/scan" && "$(stat -c '%a' "$STATE_DIR/scan" 2>/dev/null)" != 700 ]]; then
+        printf '失败 扫描状态目录权限不是 0700: %s\n' "$STATE_DIR/scan"; invalid=1
+    fi
+    if [[ ! -d "$root" ]]; then
+        printf '提示 尚无扫描指标记录\n'
+        if [[ -e "$STATE_DIR/scan/state.tsv" ]]; then
+            tmp=$(mktemp) || return 1
+            if det_scan_validate_state "$STATE_DIR/scan/state.tsv" "$tmp"; then
+                IFS=$'\t' read -r _ state_cursors state_events < "$tmp"
+                printf '扫描快照: 游标=%s 窗口事件=%s | 大小=%s字节\n' \
+                    "$state_cursors" "$state_events" "$(wc -c < "$STATE_DIR/scan/state.tsv" | tr -d ' ')"
+            else printf '失败 扫描快照结构损坏，保留现场: %s\n' "$STATE_DIR/scan/state.tsv"; invalid=1; fi
+            [[ "$(stat -c '%a' "$STATE_DIR/scan/state.tsv" 2>/dev/null)" == 600 ]] || {
+                printf '失败 扫描快照权限不是 0600: %s\n' "$STATE_DIR/scan/state.tsv"; invalid=1;
+            }
+            rm -f "$tmp"
+        else printf '提示 尚无增量扫描快照\n'; fi
+        (( invalid == 0 ))
+        return $?
+    fi
+    [[ -r "$root" && -x "$root" ]] || { printf '失败 扫描指标目录不可读取: %s\n' "$root"; return 1; }
+    [[ "$(stat -c '%a' "$root" 2>/dev/null)" == 700 ]] || {
+        printf '失败 扫描指标目录权限不是 0700: %s\n' "$root"; invalid=1;
+    }
+    shopt -s nullglob
+    for daydir in "$root"/????-??-??; do daydirs+=("$daydir"); done
+    shopt -u nullglob
+    for daydir in "${daydirs[@]}"; do
+        if [[ "${daydir##*/}" < "$cutoff" ]]; then
+            printf '警告 超出30天的指标目录待清理: %s（下次扫描发布时清理）\n' "$daydir"
+            continue
+        fi
+        shopt -s nullglob
+        files+=("$daydir"/*.tsv)
+        shopt -u nullglob
+    done
+    if (( ${#files[@]} == 0 )); then printf '提示 尚无扫描指标记录\n'; fi
+    tmp=$(mktemp -d) || { printf '失败 无法创建诊断临时目录\n'; return 1; }
+    trap 'rm -rf "$tmp"' EXIT
+    : > "$tmp/all.tsv" || return 1
+    for file in "${files[@]}"; do
+        if [[ "$(stat -c '%a' "$file" 2>/dev/null)" != 600 ]]; then
+            printf '失败 指标文件权限不是 0600: %s\n' "$file"; invalid=1
+        fi
+        [[ "$(stat -c '%a' "${file%/*}" 2>/dev/null)" == 700 ]] || {
+            printf '失败 指标日期目录权限不是 0700: %s\n' "${file%/*}"; invalid=1;
+        }
+        printf '#FILE\n' >> "$tmp/all.tsv" || return 1
+        cat "$file" >> "$tmp/all.tsv" || { printf '失败 无法读取指标文件: %s\n' "$file"; invalid=1; }
+    done
+    if (( ${#files[@]} > 0 )); then
+        if ! awk -F '\t' '
+            $0=="#FILE" {if(infile && m!=1) bad=1; infile=1; header=0; m=0; next}
+            !header {if($0!="# swiftban-scan-metrics-v1") bad=1; header=1; next}
+            $1=="M" {
+                if(NF!=9 || $2!="1" || $3!~/^[0-9a-f-]{36}$/ ||
+                   ($4!="formal" && $4!="dry-run") ||
+                   ($5!="completed" && $5!="failed" && $5!="interrupted" && $5!="stopped") ||
+                   $6!~/^[0-9]+$/ || $7!~/^[0-9]+$/ || $8!~/^[0-9]+$/ || $9=="" || ++m!=1) bad=1
+                next
+            }
+            $1=="P" {if(NF!=3 || $2!~/^[a-z-]+$/ || $3!~/^[0-9]+$/) bad=1; next}
+            $1=="C" {if(NF!=3 || $2!~/^[a-z_]+$/ || $3!~/^[0-9]+$/) bad=1; next}
+            $1=="F" {if(NF!=5 || $2=="" || $3!~/^[0-9]+$/ || $4!~/^[0-9]+$/ || $5!~/^[0-9]+$/) bad=1; next}
+            {bad=1}
+            END {if(!infile || m!=1) bad=1; exit bad}
+        ' "$tmp/all.tsv"; then
+            printf '失败 最近30天存在格式损坏的扫描指标\n'; invalid=1
+        fi
+        awk -F '\t' '$1=="M" {n++; if($5=="completed")ok++; else if($5=="failed")failed++; else if($5=="interrupted" || $5=="stopped")interrupted++}
+            END {printf "30天扫描记录: %d | 成功=%d 失败=%d 中断/停止=%d\n",n,ok,failed,interrupted}' \
+            "$tmp/all.tsv"
+        mapfile -t durations < <(awk -F '\t' '$1=="M" && $8~/^[0-9]+$/ {print $8}' "$tmp/all.tsv" | LC_ALL=C sort -n)
+        count=${#durations[@]}
+        if (( count > 0 )); then
+            local p50 p95
+            p50=$(((count-1)/2)); p95=$(((count*95+99)/100-1))
+            printf '总耗时分位数: P50=%ss P95=%ss（百分之一秒精度）\n' \
+                "$(rt_seconds_text "${durations[p50]}")" "$(rt_seconds_text "${durations[p95]}")"
+        fi
+    fi
+    if [[ -r "$STATE_DIR/last-run.tsv" ]] && IFS=$'\t' read -r id mode _ _ result duration < "$STATE_DIR/last-run.tsv"; then
+        if metric=$(rt_metrics_path "$id" 2>/dev/null); then
+            printf '最近扫描阶段耗时（百分之一秒精度）:\n'
+            awk -F '\t' '$1=="P" {printf "  %-12s %.2fs\n",$2,$3/100}' "$metric"
+            printf '最近扫描最慢文件（采集耗时）:\n'
+            awk -F '\t' '$1=="F" {printf "  %s | %.2fs | %s字节 | %s行\n",$2,$3/100,$4,$5}' "$metric"
+        else printf '最近一次执行无兼容耗时指标（旧版运行或记录未保存）\n'; fi
+    fi
+    if [[ -e "$STATE_DIR/scan/state.tsv" ]]; then
+        if ! det_scan_validate_state "$STATE_DIR/scan/state.tsv" "$tmp/state-counts"; then
+            printf '失败 扫描快照结构损坏；已保留现场，避免推进日志游标: %s\n' "$STATE_DIR/scan/state.tsv"
+            invalid=1
+        else
+            IFS=$'\t' read -r _ state_cursors state_events < "$tmp/state-counts"
+            printf '扫描快照: 游标=%s 窗口事件=%s | 大小=%s字节\n' \
+                "$state_cursors" "$state_events" "$(wc -c < "$STATE_DIR/scan/state.tsv" | tr -d ' ')"
+            [[ "$(stat -c '%a' "$STATE_DIR/scan/state.tsv" 2>/dev/null)" == 600 ]] || {
+                printf '失败 扫描快照权限不是 0600: %s\n' "$STATE_DIR/scan/state.tsv"; invalid=1;
+            }
+        fi
+    else printf '提示 尚无增量扫描快照\n'; fi
+    (( invalid == 0 ))
+)
+
 rt_doctor() {
     local failures=0 warnings=0 name state_count=0 v4_rules v6_rules expected cron_text line found_cron=0 found_timer=0
     local -a deps=(iptables awk grep find stat sort flock setsid)
@@ -583,6 +887,7 @@ rt_doctor() {
     else printf '失败 状态目录不存在或不可读写: %s\n  修复: 创建 STATE_DIR 并授权 SwiftBan 运行用户读写\n' "$STATE_DIR"; failures=$((failures+1)); fi
     watch_doctor || failures=$((failures+1))
     geo_doctor || failures=$((failures+1))
+    rt_metrics_doctor || failures=$((failures+1))
     if (( EUID == 0 )); then printf '通过 当前用户为 root\n'
     else printf '警告 当前用户不是 root，防火墙及进程控制检查可能无法完成\n'; warnings=$((warnings+1)); fi
 

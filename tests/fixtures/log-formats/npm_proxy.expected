@@ -1,0 +1,2 @@
+1795262340|203.0.113.20|200|GET|proxy.example.test|/retry?x=1|Mozilla/5.0|https://ref.example/start
+1795262350|2001:0db8:0000:0000:0000:0000:0000:0020|502|GET|proxy.example.test|/upstream-error|Agent/2.0|-

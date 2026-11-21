@@ -1,0 +1,3 @@
+1795262340|203.0.113.30|200|GET|@file:/fixtures/combined.log|/combined?q=hello|Mozilla/5.0 (compatible; ExampleBot/1.0)|https://example.test/from
+1795262350|2001:0db8:0000:0000:0000:0000:0000:0030|201|POST|@file:/fixtures/combined.log|/api/items|Agent/3.0|-
+1795262370|203.0.113.40|200|GET|@file:/fixtures/combined.log|/safe?note=198.51.100.99|Agent from 198.51.100.98|https://example.test/from/198.51.100.97

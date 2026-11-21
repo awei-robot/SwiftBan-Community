@@ -1,0 +1,2 @@
+1795262340|198.51.100.60|403|POST|api.example.test|/api/login?next=%2F|Agent/5.0|https://ref.example/
+1795262350|2001:0db8:0000:0000:0000:0000:0000:0060|200|GET|static.example.test|/assets/app.js|Mozilla/5.0|-

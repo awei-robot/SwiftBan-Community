@@ -1,0 +1,2 @@
+1795262340|198.51.100.40|200|GET|@file:/fixtures/apache_common.log|/common|__SWIFTBAN_NOT_LOGGED__|__SWIFTBAN_NOT_LOGGED__
+1795262350|198.51.100.41|304|-|@file:/fixtures/apache_common.log|-|__SWIFTBAN_NOT_LOGGED__|__SWIFTBAN_NOT_LOGGED__
