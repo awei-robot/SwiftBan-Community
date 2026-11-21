@@ -1,0 +1,3 @@
+API.Example.test:8443 198.51.100.60 - - [21/Nov/2026:11:59:00 +0000] "POST /api/login?next=%2F HTTP/1.1" 403 24 "https://ref.example/" "Agent/5.0"
+static.example.test 2001:db8::60 - - [21/Nov/2026:11:59:10 +0000] "GET /assets/app.js HTTP/1.1" 200 2048 "-" "Mozilla/5.0"
+API.Example.test 999.1.1.1 - - [21/Nov/2026:11:59:20 +0000] "GET /invalid-ip HTTP/1.1" 200 10 "-" "Agent"

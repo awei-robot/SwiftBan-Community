@@ -1,0 +1,8 @@
+[21/Nov/2026:11:59:00 +0000] 200 - GET https example.test "/hello?a=1" [Client 198.51.100.10] [Length 123] [Gzip -] "Mozilla/5.0 (X11; Linux x86_64)" "-"
+[21/Nov/2026:11:59:10 +0000] 200 - GET https [2001:db8::5] "/v6" [Client 2001:db8::10] [Length 0] [Gzip -] "Agent/1.0" "https://ref.example/"
+[21/Nov/2026:11:59:15 +0000] 404 - GET https example.test "/.env" [Client 198.51.100.66] [Length 12] [Gzip -] "curl/8.0" "-"
+[21/Nov/2026:11:59:20 +0000] 404 - GET https example.test "/wp-config.php" [Client 198.51.100.66] [Length 12] [Gzip -] "curl/8.0" "-"
+[21/Nov/2026:11:59:30 +0000] 200 - GET https example.test "/api/status?check=1" [Client 198.51.100.70] [Length 4] [Gzip -] "Mozilla/5.0" "-"
+[21/Nov/2026:11:59:40 +0000] 200 - GET https example.test "/api/status?check=1" [Client 198.51.100.70] [Length 4] [Gzip -] "Mozilla/5.0" "-"
+[21/Nov/2026:11:59:50 +0000] 200 - GET https example.test "/api/status?check=1" [Client 198.51.100.70] [Length 4] [Gzip -] "Mozilla/5.0" "-"
+[21/Nov/2026:11:59:00 +0000] 200 - GET https example.test "/invalid-ip" [Client 999.1.1.1] [Length 0] [Gzip -] "Agent" "-"
