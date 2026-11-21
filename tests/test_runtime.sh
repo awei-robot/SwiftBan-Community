@@ -29,6 +29,7 @@ chmod +x "$T/fake-bin/iptables"
 ln -s iptables "$T/fake-bin/ip6tables"
 sed -i "s|^export PATH=.*|export PATH=$T/fake-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin|" "$CLI"
 cp "$T/repo/lib/detector.sh" "$T/detector.original"
+cp "$T/repo/lib/scanstate.sh" "$T/scanstate.original"
 cat > "$T/fake-bin/crontab" <<'EOF'
 #!/bin/bash
 cat "$FAKE_FW_DIR/cron"
@@ -70,6 +71,7 @@ new_case() {
     : > "$LOGS/site_access.log"
     : > "$STATE/banlist.txt"
     cp "$T/detector.original" "$T/repo/lib/detector.sh"
+    cp "$T/scanstate.original" "$T/repo/lib/scanstate.sh"
 }
 sample() {
     python3 - "$LOGS/site_access.log" <<'PY'
@@ -219,7 +221,7 @@ cli stop
 ok "重复stop继续清理残留"
 
 new_case cancel
-cat >> "$T/repo/lib/detector.sh" <<'EOF'
+cat >> "$T/repo/lib/scanstate.sh" <<'EOF'
 det_scan_collect() {
     rt_phase collecting
     touch "$STATE_DIR/test-ready"
@@ -272,7 +274,7 @@ new_case dry_cancel
 sample
 cli run --dry-run
 before=$(cksum "$STATE/dry-run.tsv")
-cat >> "$T/repo/lib/detector.sh" <<'EOF'
+cat >> "$T/repo/lib/scanstate.sh" <<'EOF'
 det_scan_collect() {
     touch "$STATE_DIR/test-ready"
     sleep 60 &
@@ -317,7 +319,7 @@ check "清理已写入但未持久化的本实例规则" test "$(rules | wc -l)"
 if compgen -G "$STATE/.banlist-*" >/dev/null; then bad "停止后应清理本轮状态临时文件"; else ok "停止后清理本轮状态临时文件"; fi
 
 new_case escalation
-cat >> "$T/repo/lib/detector.sh" <<'EOF'
+cat >> "$T/repo/lib/scanstate.sh" <<'EOF'
 det_scan_collect() {
     touch "$STATE_DIR/test-ready"
     bash -c 'trap "" TERM; exec sleep 60' &
@@ -334,7 +336,7 @@ wait "$supervisor"
 check "TERM无效后KILL清理会话成员" not_live "$child"
 
 new_case orphan
-cat >> "$T/repo/lib/detector.sh" <<'EOF'
+cat >> "$T/repo/lib/scanstate.sh" <<'EOF'
 det_scan_collect() {
     touch "$STATE_DIR/test-ready"
     bash -c 'exec 8>&-; trap "" TERM; exec sleep 60' &
@@ -355,7 +357,7 @@ check "异常退出记录为中断" grep -q $'\tinterrupted\t137' "$STATE/last-r
 new_case start_stop_race
 now=$(date -u +%s)
 printf '198.51.100.1|%s|3600|有效\n' "$now" > "$STATE/banlist.txt"
-cat >> "$T/repo/lib/detector.sh" <<'EOF'
+cat >> "$T/repo/lib/scanstate.sh" <<'EOF'
 det_scan_collect() {
     touch "$STATE_DIR/test-ready"
     bash -c 'trap "" TERM; exec sleep 60' &
