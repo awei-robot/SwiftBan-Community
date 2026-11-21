@@ -220,7 +220,7 @@ ok "重复stop继续清理残留"
 
 new_case cancel
 cat >> "$T/repo/lib/detector.sh" <<'EOF'
-det_collect() {
+det_scan_collect() {
     rt_phase collecting
     touch "$STATE_DIR/test-ready"
     sleep 60 &
@@ -273,7 +273,7 @@ sample
 cli run --dry-run
 before=$(cksum "$STATE/dry-run.tsv")
 cat >> "$T/repo/lib/detector.sh" <<'EOF'
-det_collect() {
+det_scan_collect() {
     touch "$STATE_DIR/test-ready"
     sleep 60 &
     echo "$!" > "$STATE_DIR/child-pid"
@@ -318,7 +318,7 @@ if compgen -G "$STATE/.banlist-*" >/dev/null; then bad "停止后应清理本轮
 
 new_case escalation
 cat >> "$T/repo/lib/detector.sh" <<'EOF'
-det_collect() {
+det_scan_collect() {
     touch "$STATE_DIR/test-ready"
     bash -c 'trap "" TERM; exec sleep 60' &
     echo "$!" > "$STATE_DIR/child-pid"
@@ -335,7 +335,7 @@ check "TERM无效后KILL清理会话成员" not_live "$child"
 
 new_case orphan
 cat >> "$T/repo/lib/detector.sh" <<'EOF'
-det_collect() {
+det_scan_collect() {
     touch "$STATE_DIR/test-ready"
     bash -c 'exec 8>&-; trap "" TERM; exec sleep 60' &
     echo "$!" > "$STATE_DIR/child-pid"
@@ -356,7 +356,7 @@ new_case start_stop_race
 now=$(date -u +%s)
 printf '198.51.100.1|%s|3600|有效\n' "$now" > "$STATE/banlist.txt"
 cat >> "$T/repo/lib/detector.sh" <<'EOF'
-det_collect() {
+det_scan_collect() {
     touch "$STATE_DIR/test-ready"
     bash -c 'trap "" TERM; exec sleep 60' &
     echo "$!" > "$STATE_DIR/child-pid"
