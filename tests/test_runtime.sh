@@ -365,7 +365,10 @@ det_collect() {
 EOF
 bash "$CLI" run > "$T/race-worker.out" 2>&1 &
 supervisor=$!
-await_ready
+if ! await_ready; then
+    cat "$T/race-worker.out" "$T/race-stop.out" 2>/dev/null || true
+    exit 1
+fi
 child=$(cat "$STATE/child-pid")
 bash "$CLI" stop > "$T/race-stop.out" 2>&1 &
 stopper=$!
