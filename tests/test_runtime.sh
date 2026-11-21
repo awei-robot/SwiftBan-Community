@@ -387,6 +387,7 @@ for ((i=0;i<50;i++)); do
 done
 # 旧进程已加载阻塞扫描，新启动进程使用正常引擎。
 cp "$T/detector.original" "$T/repo/lib/detector.sh"
+cp "$T/scanstate.original" "$T/repo/lib/scanstate.sh"
 bash "$CLI" start > "$T/race-start.out" 2>&1 &
 starter=$!
 wait "$stopper"
