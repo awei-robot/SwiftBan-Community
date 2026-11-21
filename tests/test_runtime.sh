@@ -290,6 +290,7 @@ wait "$supervisor"
 check "中断演练保留上次完整结果" test "$(cksum "$STATE/dry-run.tsv")" = "$before"
 check "中断演练记录正确模式和结果" grep -q $'\tdry-run\t.*\tstopped\t0' "$STATE/last-run.tsv"
 cp "$T/detector.original" "$T/repo/lib/detector.sh"
+cp "$T/scanstate.original" "$T/repo/lib/scanstate.sh"
 cli run --dry-run
 check "中断后仍可在停止状态重新演练" grep -q '^stopped' "$STATE/stopped.tsv"
 
