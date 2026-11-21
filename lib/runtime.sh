@@ -605,7 +605,7 @@ rt_metrics_status() {
         $1=="M" {mode=$4; result=$5; duration=$8}
         $1=="C" {v[$2]=$3}
         END {
-            printf "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d",mode,result,duration,
+            printf "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d",mode,result,duration,
                 v["files"],v["bytes_read"],v["lines_read"],v["valid"],v["invalid"],v["window_events"],v["candidates"],
                 (v["files"]!="" ? 1 : 0)
         }

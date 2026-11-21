@@ -136,6 +136,10 @@ check "失败保留上次完整结果" test "$(cksum "$STATE/dry-run.tsv")" = "$
 metric=$(run_metric)
 check "失败扫描保存失败阶段部分耗时" bash -c 'awk -F "\t" '\''$1=="M"&&$5=="failed"{f=1}$1=="P"&&$2=="collecting"{p=1}END{exit !(f&&p)}'\'' "$1"' _ "$metric"
 printf '\nLOG_DIR="%s"\n' "$LOGS" >> "$SWIFTBAN_CONF"
+# A truncated source file does not expire already-collected events. Clear the
+# rolling event snapshot here so this assertion covers a genuinely empty window.
+awk -F '\t' '$1=="C" {print}' "$STATE/scan/state.tsv" > "$T/cursors-only.tsv"
+mv "$T/cursors-only.tsv" "$STATE/scan/state.tsv"
 : > "$LOGS/site_access.log"
 cli run --dry-run
 check "零候选覆盖旧演练结果并保留复核元数据" bash -c 'grep -q "^# run_id[[:space:]]" "$1" && grep -q "^# thresholds[[:space:]]" "$1" && ! grep -q "^[0-9]" "$1"' _ "$STATE/dry-run.tsv"
