@@ -62,7 +62,8 @@ det_scan_cursor_at_eof() (
 # Input records: source<TAB>family<TAB>event-id<TAB>file-generation<TAB>raw-line
 det_scan_collect() (
     local wd="$1" state file base family suffix identity generation offset last_line_offset fingerprint
-    local size mtime now after_identity after_size raw chunk seen="|" bytes stored_fingerprint
+    local size mtime now after_identity after_size chunk chunk_size seen="|" stored_fingerprint
+    local fingerprint_start fingerprint_bytes
     local cursor_offset priority candidate_mtime abandoned_files=0 after_mtime
     local file_started='' file_elapsed=0 file_start_offset=0 file_lines=0 file_bytes=0
     local cursor_file="$wd/cursors.pending" state_file
@@ -76,6 +77,7 @@ det_scan_collect() (
     fi
     : > "$wd/input.tsv" || return 1
     : > "$wd/files" || return 1
+    : > "$wd/identity-files.tsv" || return 1
     : > "$cursor_file" || return 1
     : > "$wd/line-meta.tsv" || return 1
     state="$state_file"
@@ -213,18 +215,48 @@ det_scan_collect() (
         if (( size > offset )); then
             chunk="$wd/chunk"
             if ! tail -c "+$((offset + 1))" "$file" > "$chunk"; then return 1; fi
-            while IFS= read -r raw; do
-                bytes=$(printf '%s\n' "$raw" | wc -c | tr -d ' ') || return 1
-                printf '%s:%s:%s\t%s\t%s\t%s\n' "$identity" "$generation" "$offset" \
-                    "$identity" "$last_line_offset" "$fingerprint" >> "$wd/line-meta.tsv" || return 1
-                last_line_offset="$offset"
-                fingerprint=$(printf '%s\n' "$raw" | cksum) || return 1
-                printf '%s\t%s\t%s:%s:%s\t%s:%s\t%s\n' \
-                    "$file" "$family" "$identity" "$generation" "$offset" \
-                    "$identity" "$generation" "$raw" >> "$wd/input.tsv" || return 1
-                offset=$((offset + bytes))
-                file_lines=$((file_lines + 1))
-            done < "$chunk"
+            chunk_size=$(stat -c '%s' "$chunk" 2>/dev/null || stat -f '%z' "$chunk") || return 1
+            printf '%s\t%s\n' "$identity" "$file" >> "$wd/identity-files.tsv" || return 1
+            SWIFTBAN_SOURCE="$file" SWIFTBAN_FAMILY="$family" SWIFTBAN_IDENTITY="$identity" \
+                SWIFTBAN_GENERATION="$generation" SWIFTBAN_BASE_OFFSET="$offset" \
+                SWIFTBAN_PREVIOUS_LINE_OFFSET="$last_line_offset" SWIFTBAN_CHUNK_SIZE="$chunk_size" \
+                SWIFTBAN_INPUT="$wd/input.tsv" SWIFTBAN_LINE_META="$wd/line-meta.tsv" \
+                SWIFTBAN_CURSOR_RESULT="$wd/file-cursor.tsv" LC_ALL=C awk '
+                    BEGIN {
+                        CONVFMT="%.0f"
+                        OFMT="%.0f"
+                        offset=ENVIRON["SWIFTBAN_BASE_OFFSET"]+0
+                        previous=ENVIRON["SWIFTBAN_PREVIOUS_LINE_OFFSET"]+0
+                        chunk_size=ENVIRON["SWIFTBAN_CHUNK_SIZE"]+0
+                        identity=ENVIRON["SWIFTBAN_IDENTITY"]
+                        generation=ENVIRON["SWIFTBAN_GENERATION"]
+                        source=ENVIRON["SWIFTBAN_SOURCE"]
+                        family=ENVIRON["SWIFTBAN_FAMILY"]
+                    }
+                    {
+                        line_bytes=length($0)+1
+                        if(consumed+line_bytes>chunk_size) exit
+                        event=identity ":" generation ":" offset
+                        printf "%s\t%s\t%s\t%s\t%s\n", source,family,event,identity ":" generation,$0 >> ENVIRON["SWIFTBAN_INPUT"]
+                        printf "%s\t%s\t%d\n", event,identity,previous >> ENVIRON["SWIFTBAN_LINE_META"]
+                        previous=offset
+                        offset+=line_bytes
+                        consumed+=line_bytes
+                        lines++
+                    }
+                    END {
+                        printf "%.0f\t%.0f\t%.0f\n",offset,previous,lines > ENVIRON["SWIFTBAN_CURSOR_RESULT"]
+                        close(ENVIRON["SWIFTBAN_INPUT"])
+                        close(ENVIRON["SWIFTBAN_LINE_META"])
+                        close(ENVIRON["SWIFTBAN_CURSOR_RESULT"])
+                    }
+                ' "$chunk" || return 1
+            IFS=$'\t' read -r offset last_line_offset file_lines < "$wd/file-cursor.tsv" || return 1
+            if (( file_lines > 0 )); then
+                fingerprint_start=$((last_line_offset - file_start_offset + 1))
+                fingerprint_bytes=$((offset - last_line_offset))
+                fingerprint=$(tail -c "+$fingerprint_start" "$chunk" | head -c "$fingerprint_bytes" | cksum) || return 1
+            fi
             rm -f "$chunk"
         fi
         read -r after_identity after_size < <(
@@ -270,8 +302,23 @@ det_scan_collect() (
 
 # If a new line carries a future timestamp, keep its file cursor at that line
 # so a later run can reconsider it once the server clock catches up.
+det_scan_find_identity_file() {
+    local target="$1" file identity
+    while IFS= read -r -d '' file; do
+        read -r identity < <(
+            stat -c '%d:%i' "$file" 2>/dev/null || stat -f '%d:%i' "$file" 2>/dev/null
+        ) || continue
+        if [[ "$identity" == "$target" ]]; then
+            printf '%s\n' "$file"
+            return 0
+        fi
+    done < <(find "$LOG_DIR" -maxdepth 1 -type f -name '*access.log*' -print0)
+    return 1
+}
+
 det_scan_rewind_future() {
     local wd="$1" event identity generation offset meta_identity previous_offset previous_fingerprint
+    local source_file source_identity span checksum checksum_bytes
     local future_file="$wd/future.tsv"
     [[ -s "$future_file" ]] || return 0
     while IFS= read -r event; do
@@ -279,10 +326,26 @@ det_scan_rewind_future() {
         identity=$(printf '%s\n' "$event" | sed -E 's/^([0-9]+:[0-9]+):[0-9]+:[0-9]+$/\1/')
         generation=$(printf '%s\n' "$event" | sed -E 's/^[0-9]+:[0-9]+:([0-9]+):[0-9]+$/\1/')
         offset=$(printf '%s\n' "$event" | sed -E 's/^[0-9]+:[0-9]+:[0-9]+:([0-9]+)$/\1/')
-        IFS=$'\t' read -r meta_identity previous_offset previous_fingerprint < <(
-            awk -F '\t' -v event="$event" '$1==event {print $2 "\t" $3 "\t" $4; exit}' "$wd/line-meta.tsv"
+        IFS=$'\t' read -r meta_identity previous_offset < <(
+            awk -F '\t' -v event="$event" '$1==event {print $2 "\t" $3; exit}' "$wd/line-meta.tsv"
         )
         [[ "$meta_identity" == "$identity" ]] || return 1
+        source_file=$(awk -F '\t' -v id="$identity" '$1==id {print $2; exit}' "$wd/identity-files.tsv")
+        [[ -n "$source_file" ]] || return 1
+        read -r source_identity < <(
+            stat -c '%d:%i' "$source_file" 2>/dev/null || stat -f '%d:%i' "$source_file" 2>/dev/null
+        ) || return 1
+        if [[ "$source_identity" != "$identity" ]]; then
+            source_file=$(det_scan_find_identity_file "$identity") || return 1
+        fi
+        previous_fingerprint=""
+        if (( offset > previous_offset )); then
+            span=$((offset - previous_offset))
+            checksum=$(tail -c "+$((previous_offset + 1))" "$source_file" | head -c "$span" | cksum) || return 1
+            read -r _ checksum_bytes <<< "$checksum"
+            [[ "$checksum_bytes" == "$span" ]] || return 1
+            previous_fingerprint="$checksum"
+        fi
         awk -F '\t' -v OFS='\t' -v id="$identity" -v generation="$generation" \
             -v offset="$offset" -v seen="$(date -u +%s)" -v p="$previous_offset" \
             -v h="$previous_fingerprint" '
