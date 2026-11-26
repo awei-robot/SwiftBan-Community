@@ -31,10 +31,39 @@ det_scan_validate_state() {
     ' "$file" > "$output"
 }
 
+# Return a safe cursor at the last complete line without parsing old contents.
+det_scan_cursor_at_eof() (
+    set -o pipefail
+    local file="$1" size="$2" last_byte bytes offset last_line_offset fingerprint
+    if (( size == 0 )); then
+        printf '0\t0\t\n'
+        return 0
+    fi
+    last_byte=$(tail -c 1 "$file" | od -An -tu1 | tr -d '[:space:]') || return 1
+    if [[ "$last_byte" == 10 ]]; then
+        bytes=$(tail -n 1 "$file" | wc -c | tr -d ' ') || return 1
+        offset="$size"
+        last_line_offset=$((offset - bytes))
+        fingerprint=$(tail -n 1 "$file" | cksum) || return 1
+    else
+        bytes=$(tail -n 1 "$file" | wc -c | tr -d ' ') || return 1
+        offset=$((size - bytes))
+        if (( offset == 0 )); then
+            printf '0\t0\t\n'
+            return 0
+        fi
+        bytes=$(tail -n 2 "$file" | sed '$d' | wc -c | tr -d ' ') || return 1
+        last_line_offset=$((offset - bytes))
+        fingerprint=$(tail -n 2 "$file" | sed '$d' | cksum) || return 1
+    fi
+    printf '%s\t%s\t%s\n' "$offset" "$last_line_offset" "$fingerprint"
+)
+
 # Input records: source<TAB>family<TAB>event-id<TAB>file-generation<TAB>raw-line
 det_scan_collect() (
     local wd="$1" state file base family suffix identity generation offset last_line_offset fingerprint
     local size mtime now after_identity after_size raw chunk seen="|" bytes stored_fingerprint
+    local cursor_offset priority candidate_mtime abandoned_files=0 after_mtime
     local file_started='' file_elapsed=0 file_start_offset=0 file_lines=0 file_bytes=0
     local cursor_file="$wd/cursors.pending" state_file
     state_file=$(det_scan_state_path) || return 1
@@ -53,7 +82,46 @@ det_scan_collect() (
     now=$(date -u +%s) || return 1
     find "$LOG_DIR" -maxdepth 1 -type f -name '*access.log*' -print0 > "$wd/all-files" || return 1
 
+    # Snapshot eligible files before reading: recent mtime files always run
+    # first; older files are included only when a cursor already tracks them.
+    : > "$wd/candidates.tsv" || return 1
     while IFS= read -r -d '' file; do
+        base=$(basename "$file")
+        if [[ "$base" == *access.log ]]; then
+            :
+        elif [[ "$base" == *access.log.* || "$base" == *access.log-* ]]; then
+            suffix=$(printf '%s\n' "$base" | sed 's/^.*access\.log//')
+            [[ "$suffix" =~ ^\.[0-9]+$ || "$suffix" =~ ^[-.][0-9]{4}-?[0-9]{2}-?[0-9]{2}([-.][0-9]+)?$ ]] || continue
+        else
+            continue
+        fi
+        if [[ "$file" =~ [[:cntrl:]] ]]; then
+            log_error "日志路径含不支持的控制字符"
+            return 1
+        fi
+        read -r identity size mtime < <(
+            stat -c '%d:%i %s %Y' "$file" 2>/dev/null ||
+                stat -f '%d:%i %z %m' "$file"
+        ) || return 1
+        [[ "$identity" =~ ^[0-9]+:[0-9]+$ && "$size" =~ ^[0-9]+$ && "$mtime" =~ ^[0-9]+$ ]] || return 1
+        cursor_offset=""
+        if [[ -f "$state" ]]; then
+            cursor_offset=$(awk -F '\t' -v id="$identity" '$1=="C" && $2==id {print $4; exit}' "$state")
+        fi
+        if (( now - mtime <= 180 )); then
+            priority=0
+        elif [[ -n "$cursor_offset" ]]; then
+            priority=1
+        else
+            continue
+        fi
+        [[ "$cursor_offset" =~ ^[0-9]+$ ]] || cursor_offset=0
+        printf '%s\t%s\t%s\t%s\n' "$priority" "$cursor_offset" "$mtime" "$file" >> "$wd/candidates.tsv" || return 1
+    done < "$wd/all-files"
+    LC_ALL=C sort -t $'\t' -k1,1n -k2,2n -k3,3nr -k4,4 "$wd/candidates.tsv" > "$wd/candidates.sorted" || return 1
+    cut -f1,3,4 "$wd/candidates.sorted" > "$wd/ordered-candidates.tsv" || return 1
+
+    while IFS=$'\t' read -r priority candidate_mtime file; do
         base=$(basename "$file")
         if [[ "$base" == *access.log ]]; then
             family="$file"
@@ -73,6 +141,10 @@ det_scan_collect() (
                 stat -f '%d:%i %z %m' "$file"
         ) || return 1
         [[ "$identity" =~ ^[0-9]+:[0-9]+$ && "$size" =~ ^[0-9]+$ && "$mtime" =~ ^[0-9]+$ ]] || return 1
+        if (( priority == 1 )) && [[ "$mtime" != "$candidate_mtime" ]]; then
+            log_warn "旧日志在调度期间已更新，留待下轮按近期优先扫描: $file"
+            return 1
+        fi
         [[ "$seen" == *"|$identity|"* ]] && continue
         seen="$seen$identity|"
 
@@ -111,10 +183,24 @@ det_scan_collect() (
             fi
         fi
 
-        # The 3-minute mtime filter discovers new files. Known inodes remain
-        # eligible so a renamed/rotated file can finish being read.
-        if ! awk -F '\t' -v id="$identity" '$1=="C" && $2==id {found=1} END {exit !found}' "$state" 2>/dev/null; then
-            if (( now - mtime > 180 )); then continue; fi
+        if (( priority == 1 )); then
+            # Abandon unread history after the mtime window. Rebase to the
+            # last complete line so later appends resume without replaying it.
+            IFS=$'\t' read -r offset last_line_offset fingerprint < <(
+                det_scan_cursor_at_eof "$file" "$size"
+            ) || return 1
+            read -r after_identity after_size after_mtime < <(
+                stat -c '%d:%i %s %Y' "$file" 2>/dev/null ||
+                    stat -f '%d:%i %z %m' "$file"
+            ) || return 1
+            if [[ "$identity" != "$after_identity" || "$after_size" != "$size" || "$after_mtime" != "$mtime" ]]; then
+                log_warn "旧日志在游标重建期间发生变化，本轮不推进游标: $file"
+                return 1
+            fi
+            printf 'C\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$identity" "$generation" "$offset" "$now" "$family" \
+                "$last_line_offset" "$fingerprint" >> "$cursor_file" || return 1
+            abandoned_files=$((abandoned_files + 1))
+            continue
         fi
 
         file_start_offset="$offset"
@@ -157,12 +243,16 @@ det_scan_collect() (
             file_bytes=$((offset-file_start_offset)); (( file_bytes >= 0 )) || file_bytes=0
             rt_metrics_file "$file" "$file_elapsed" "$file_bytes" "$file_lines"
         fi
-    done < "$wd/all-files"
+    done < "$wd/ordered-candidates.tsv"
+
+    if (( abandoned_files > 0 )); then
+        log_info "超过3分钟的日志已跳过旧内容并重建游标: ${abandoned_files}个文件"
+    fi
 
     # Carry forward cursor rows for files temporarily absent during rotation.
     if [[ -f "$state" ]]; then
         awk -F '\t' -v OFS='\t' -v now="$now" '
-            $1=="C" && now-$5<=604800 {
+            $1=="C" && now-$5<=180 {
                 if($4==0 && $7=="" && $8=="") $7=0
                 print
             }
