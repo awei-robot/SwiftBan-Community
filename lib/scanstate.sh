@@ -59,6 +59,17 @@ det_scan_cursor_at_eof() (
     printf '%s\t%s\t%s\n' "$offset" "$last_line_offset" "$fingerprint"
 )
 
+# Read and checksum an exact byte range. head intentionally closes its input
+# early, so disable pipefail for this pipeline and verify the byte count.
+det_scan_checksum_range() (
+    local file="$1" start="$2" count="$3" checksum checksum_bytes
+    set +o pipefail
+    checksum=$(tail -c "+$start" "$file" | head -c "$count" | cksum) || return 1
+    read -r _ checksum_bytes <<< "$checksum"
+    [[ "$checksum_bytes" == "$count" ]] || return 1
+    printf '%s\n' "$checksum"
+)
+
 # Input records: source<TAB>family<TAB>event-id<TAB>file-generation<TAB>raw-line
 det_scan_collect() (
     local wd="$1" state file base family suffix identity generation offset last_line_offset fingerprint
@@ -174,8 +185,11 @@ det_scan_collect() (
             fingerprint=""
             log_warn "检测到日志截断，已重置读取位置: $file"
         elif (( offset > 0 && last_line_offset < offset )) && [[ -n "$fingerprint" ]]; then
-            stored_fingerprint=$(tail -c "+$((last_line_offset + 1))" "$file" |
-                head -c "$((offset - last_line_offset))" | cksum) || return 1
+            stored_fingerprint=$(det_scan_checksum_range "$file" "$((last_line_offset + 1))" \
+                "$((offset - last_line_offset))") || {
+                log_error "游标末行指纹计算失败: $file"
+                return 1
+            }
             if [[ "$stored_fingerprint" != "$fingerprint" ]]; then
                 generation=$((generation + 1))
                 offset=0
@@ -255,7 +269,10 @@ det_scan_collect() (
             if (( file_lines > 0 )); then
                 fingerprint_start=$((last_line_offset - file_start_offset + 1))
                 fingerprint_bytes=$((offset - last_line_offset))
-                fingerprint=$(tail -c "+$fingerprint_start" "$chunk" | head -c "$fingerprint_bytes" | cksum) || return 1
+                fingerprint=$(det_scan_checksum_range "$chunk" "$fingerprint_start" "$fingerprint_bytes") || {
+                    log_error "日志末行指纹计算失败: $file"
+                    return 1
+                }
             fi
             rm -f "$chunk"
         fi
@@ -318,7 +335,7 @@ det_scan_find_identity_file() {
 
 det_scan_rewind_future() {
     local wd="$1" event identity generation offset meta_identity previous_offset previous_fingerprint
-    local source_file source_identity span checksum checksum_bytes
+    local source_file source_identity span checksum
     local future_file="$wd/future.tsv"
     [[ -s "$future_file" ]] || return 0
     while IFS= read -r event; do
@@ -341,9 +358,10 @@ det_scan_rewind_future() {
         previous_fingerprint=""
         if (( offset > previous_offset )); then
             span=$((offset - previous_offset))
-            checksum=$(tail -c "+$((previous_offset + 1))" "$source_file" | head -c "$span" | cksum) || return 1
-            read -r _ checksum_bytes <<< "$checksum"
-            [[ "$checksum_bytes" == "$span" ]] || return 1
+            checksum=$(det_scan_checksum_range "$source_file" "$((previous_offset + 1))" "$span") || {
+                log_error "未来时间日志前一行指纹计算失败: $source_file"
+                return 1
+            }
             previous_fingerprint="$checksum"
         fi
         awk -F '\t' -v OFS='\t' -v id="$identity" -v generation="$generation" \

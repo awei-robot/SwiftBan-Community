@@ -188,6 +188,7 @@ rt_metrics_publish() (
         [[ -d "$old" ]] || continue
         [[ "${old##*/}" < "$cutoff" ]] && rm -rf "$old"
     done
+    return 0
 )
 
 # 返回 0=同一会话仍有存活成员，1=已退出，2=身份不可信。忽略僵尸进程。
