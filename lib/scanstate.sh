@@ -10,8 +10,9 @@ det_scan_validate_state() {
     awk -F '\t' -v OFS='\t' '
         $1=="C" {
             if(NF!=8 || $2!~/^[0-9]+:[0-9]+$/ || $3!~/^[0-9]+$/ ||
-               $4!~/^[0-9]+$/ || $5!~/^[0-9]+$/ || $7!~/^[0-9]+$/ ||
-               !(($4==0 && $7==0 && $8=="") || ($7<$4 && $8~/^[0-9]+ [0-9]+$/))) bad=1
+               $4!~/^[0-9]+$/ || $5!~/^[0-9]+$/ ||
+               !(($4==0 && ($7==0 || $7=="") && $8=="") ||
+                 ($7~/^[0-9]+$/ && $7<$4 && $8~/^[0-9]+ [0-9]+$/))) bad=1
             else cursors++
             next
         }
@@ -84,6 +85,11 @@ det_scan_collect() (
                 awk -F '\t' -v id="$identity" '$1=="C" && $2==id {g=$3;o=$4;p=$7;h=$8} END {if(g!="") print g "\t" o "\t" p "\t" h}' "$state"
             )
         fi
+        # Older snapshots may leave the last-line offset blank for a file
+        # that has never been read. Normalize that zero-offset cursor.
+        if [[ "$offset" == 0 && -z "$last_line_offset" && -z "$fingerprint" ]]; then
+            last_line_offset=0
+        fi
         if [[ -z "$generation" ]]; then
             generation=0
             offset=0
@@ -155,7 +161,12 @@ det_scan_collect() (
 
     # Carry forward cursor rows for files temporarily absent during rotation.
     if [[ -f "$state" ]]; then
-        awk -F '\t' -v now="$now" '$1=="C" && now-$5<=604800 {print}' "$state" > "$wd/cursors.old" || return 1
+        awk -F '\t' -v OFS='\t' -v now="$now" '
+            $1=="C" && now-$5<=604800 {
+                if($4==0 && $7=="" && $8=="") $7=0
+                print
+            }
+        ' "$state" > "$wd/cursors.old" || return 1
         {
             cat "$cursor_file"
             awk -F '\t' -v current="$cursor_file" '
